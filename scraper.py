@@ -40,6 +40,107 @@ def get_page(url: str) -> BeautifulSoup:
         print(f"Errore nel caricare {url}: {e}")
         return None
 
+def extract_dates_and_times_from_ticket_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+    """
+    Estrae date e orari dalla pagina dettagliata del ticket.
+    
+    La struttura è: ogni giorno è in un <div class="media mbm"> con:
+    - <div class="media-left"> contiene: weekday, day, month
+    - <div class="media-body"> contiene: pulsanti <button class="btn-fab c"> con gli orari
+    
+    Args:
+        soup: BeautifulSoup object della pagina del ticket
+        
+    Returns:
+        Lista di dizionari con data e orari per quella data (senza duplicati)
+    """
+    dates_times = []
+    
+    if soup is None:
+        return dates_times
+    
+    # Cerca tutti i div con classe "media mbm" che rappresentano un giorno
+    media_elements = soup.find_all('div', class_=re.compile(r'media.*mbm', re.I))
+    
+    # Converti mese in numero
+    month_map = {
+        'GEN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+        'MAG': '05', 'GIU': '06', 'LUG': '07', 'AGO': '08',
+        'SET': '09', 'OTT': '10', 'NOV': '11', 'DIC': '12'
+    }
+    
+    # Usa un dict per raggruppare per data (evita duplicati)
+    dates_dict = {}
+    
+    for media_elem in media_elements:
+        # Estrai la data da media-left
+        media_left = media_elem.find('div', class_='media-left')
+        if not media_left:
+            continue
+        
+        weekday_elem = media_left.find('span', class_='weekday')
+        day_elem = media_left.find('span', class_='day')
+        month_elem = media_left.find('span', class_='month')
+        
+        if not (weekday_elem and day_elem and month_elem):
+            continue
+        
+        day_name = weekday_elem.get_text(strip=True)
+        day_num = day_elem.get_text(strip=True)
+        month = month_elem.get_text(strip=True)
+        
+        # Converti mese
+        month_num = month_map.get(month.upper(), '01')
+        
+        # Costruisci la data (anno corrente)
+        current_year = datetime.now().year
+        now = datetime.now()
+        # Se il mese è passato rispetto ad oggi, probabilmente è dell'anno prossimo
+        if int(month_num) < now.month:
+            current_year += 1
+        elif int(month_num) == now.month and int(day_num) < now.day:
+            current_year += 1
+        
+        date_str = f"{current_year}-{month_num}-{day_num.zfill(2)}"
+        
+        # Estrai gli orari da media-body
+        media_body = media_elem.find('div', class_='media-body')
+        times = []
+        
+        if media_body:
+            # Cerca tutti i pulsanti con orari
+            time_buttons = media_body.find_all('button', class_=re.compile(r'btn-fab', re.I))
+            for btn in time_buttons:
+                btn_text = btn.get_text(strip=True)
+                # Estrai orari nel formato HH:MM
+                if re.match(r'\d{1,2}:\d{2}', btn_text):
+                    try:
+                        h, m = map(int, btn_text.split(':'))
+                        if 0 <= h < 24 and 0 <= m < 60:
+                            times.append(btn_text)
+                    except:
+                        continue
+        
+        # Raggruppa per data (unisce orari se stessa data appare più volte)
+        if date_str in dates_dict:
+            # Unisci gli orari, rimuovi duplicati
+            dates_dict[date_str]['orari'].extend(times)
+            dates_dict[date_str]['orari'] = sorted(list(set(dates_dict[date_str]['orari'])))
+        else:
+            dates_dict[date_str] = {
+                "data": date_str,
+                "giorno": day_name,
+                "orari": sorted(list(set(times))) if times else []
+            }
+    
+    # Converti dict in lista, filtra solo quelli con orari
+    dates_times = [dt for dt in dates_dict.values() if dt['orari']]
+    
+    # Ordina per data
+    dates_times.sort(key=lambda x: x['data'])
+    
+    return dates_times
+
 def extract_times_from_text(text: str) -> List[str]:
     """
     Estrae gli orari di proiezione da una stringa.
@@ -170,12 +271,40 @@ def extract_film_data(soup: BeautifulSoup, cinema_name: str) -> List[Dict[str, A
             if sala_match:
                 sala_info = f"Sala {sala_match.group(1)}"
         
+        # Cerca il link "Acquista biglietto e vedi tutte le date"
+        ticket_link = None
+        # Prova prima con una ricerca per href che contiene "ticket"
+        ticket_elem = section.find('a', href=re.compile(r'ticket', re.I))
+        if not ticket_elem:
+            # Prova a cercare per testo (potrebbe essere su più righe)
+            ticket_elem = section.find('a', string=re.compile(r'Acquista.*biglietto', re.I))
+        
+        if ticket_elem:
+            ticket_href = ticket_elem.get('href', '')
+            if ticket_href:
+                # Costruisci l'URL completo se è relativo
+                if ticket_href.startswith('/'):
+                    ticket_link = f"https://www.comingsoon.it{ticket_href}"
+                elif ticket_href.startswith('http'):
+                    ticket_link = ticket_href
+                else:
+                    ticket_link = f"https://www.comingsoon.it{ticket_href}"
+        
+        # Se c'è il link, scrapa la pagina dettagliata per date e orari
+        programmazione = []
+        if ticket_link:
+            print(f"  Scraping pagina dettagliata per '{title}'...")
+            ticket_soup = get_page(ticket_link)
+            if ticket_soup:
+                programmazione = extract_dates_and_times_from_ticket_page(ticket_soup)
+        
         # Crea struttura dati per il film
         if title:  # Aggiungi anche se non ci sono orari (potrebbe essere programmazione futura)
             film_data = {
                 "titolo": title,
-                "orari": times if times else [],
-                "sala": sala_info
+                "orari": times if times else [],  # Orari dalla pagina principale (per retrocompatibilità)
+                "sala": sala_info,
+                "programmazione": programmazione if programmazione else []  # Date e orari dettagliati
             }
             films.append(film_data)
     
