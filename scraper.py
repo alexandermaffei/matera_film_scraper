@@ -335,6 +335,7 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
 def format_telegram_message(data: Dict[str, Any]) -> str:
     """
     Formatta i dati dei film in un messaggio per Telegram con emoji e formato leggibile.
+    Raggruppa per film invece che per cinema.
     
     Args:
         data: Dizionario con i dati dei cinema e film
@@ -342,27 +343,36 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
     Returns:
         Stringa formattata per Telegram
     """
+    from collections import defaultdict
+    from datetime import datetime as dt_class
+    
     lines = []
-    lines.append("🎬 *FILM IN PROGRAMMAZIONE - MATERA*\n")
+    lines.append("🎬 FILM IN PROGRAMMAZIONE - MATERA\n")
+    
+    # Mappa nomi cinema completi a nomi brevi
+    cinema_short_names = {
+        "Cinema Comunale Guerrieri": "Guerrieri",
+        "Il Piccolo": "Piccolo",
+        "UCI Cinemas Red Carpet": "Red Carpet"
+    }
+    
+    # Mappa nomi mesi in italiano
+    mesi_italiano = {
+        '01': 'gennaio', '02': 'febbraio', '03': 'marzo', '04': 'aprile',
+        '05': 'maggio', '06': 'giugno', '07': 'luglio', '08': 'agosto',
+        '09': 'settembre', '10': 'ottobre', '11': 'novembre', '12': 'dicembre'
+    }
+    
+    # Raccogli tutti i film raggruppati per titolo
+    films_dict = defaultdict(lambda: {
+        "cinema": [],
+        "programmazione": defaultdict(list)  # data -> lista di (orari, cinema)
+    })
     
     for cinema in data.get("cinema", []):
         cinema_name = cinema.get("cinema", "")
+        cinema_short = cinema_short_names.get(cinema_name, cinema_name)
         films = cinema.get("film", [])
-        
-        if not films:
-            continue
-        
-        # Emoji per cinema (puoi personalizzare)
-        cinema_emoji = "🎭"  # Default
-        if "UCI" in cinema_name:
-            cinema_emoji = "🎪"
-        elif "Comunale" in cinema_name:
-            cinema_emoji = "🏛️"
-        elif "Piccolo" in cinema_name:
-            cinema_emoji = "🎨"
-        
-        lines.append(f"{cinema_emoji} *{cinema_name}*")
-        lines.append("")
         
         for film in films:
             titolo = film.get("titolo", "")
@@ -372,37 +382,63 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
                 # Usa gli orari della pagina principale se non c'è programmazione dettagliata
                 orari = film.get("orari", [])
                 if orari:
-                    lines.append(f"📽️ *{titolo}*")
-                    orari_str = " • ".join(orari)
-                    lines.append(f"   🕐 {orari_str}")
-                    lines.append("")
+                    # Aggiungi a una data fittizia "oggi" o crea una voce generica
+                    films_dict[titolo]["cinema"].append(cinema_short)
             else:
                 # Usa la programmazione completa con date
-                lines.append(f"📽️ *{titolo}*")
-                
-                # Raggruppa per data
                 for prog in programmazione:
                     data_str = prog.get("data", "")
-                    giorno = prog.get("giorno", "")
                     orari = prog.get("orari", [])
                     
                     if orari:
-                        # Formatta la data in modo più leggibile (es. "02/11 - domenica")
-                        try:
-                            date_parts = data_str.split("-")
-                            if len(date_parts) == 3:
-                                data_breve = f"{date_parts[2]}/{date_parts[1]}"
-                                lines.append(f"   📅 {data_breve} ({giorno})")
-                                orari_str = " • ".join(orari)
-                                lines.append(f"      🕐 {orari_str}")
-                        except:
-                            lines.append(f"   📅 {data_str} ({giorno})")
-                            orari_str = " • ".join(orari)
-                            lines.append(f"      🕐 {orari_str}")
-                
-                lines.append("")
+                        # Raggruppa per data: data -> [(orari, cinema), ...]
+                        films_dict[titolo]["programmazione"][data_str].append((orari, cinema_short))
+    
+    # Ordina i film per titolo
+    sorted_films = sorted(films_dict.items())
+    
+    # Genera output per ogni film
+    for titolo, film_data in sorted_films:
+        lines.append(f"📽️ {titolo}")
         
-        lines.append("─" * 30)
+        # Raggruppa programmazione per data (ordina le date)
+        programmazione_sorted = sorted(film_data["programmazione"].items())
+        
+        if programmazione_sorted:
+            for data_str, orari_cinema_list in programmazione_sorted:
+                # Estrai giorno della settimana e formatta data
+                try:
+                    date_parts = data_str.split("-")
+                    if len(date_parts) == 3:
+                        anno, mese, giorno_num = date_parts
+                        
+                        mese_nome = mesi_italiano.get(mese, mese)
+                        giorno_int = int(giorno_num)
+                        
+                        # Formatta: "2 novembre" (senza giorno della settimana)
+                        data_formattata = f"{giorno_int} {mese_nome}"
+                        
+                        lines.append(f"   📅 {data_formattata}")
+                        
+                        # Raggruppa orari per data e mostra con cinema
+                        for orari, cinema_short in orari_cinema_list:
+                            # Formatta ogni orario con il cinema
+                            orari_con_cinema = [f"{ora} ({cinema_short})" for ora in orari]
+                            orari_str = " • ".join(orari_con_cinema)
+                            lines.append(f"      🕐 {orari_str}")
+                except Exception as e:
+                    # Fallback se errore nel parsing della data
+                    lines.append(f"   📅 {data_str}")
+                    for orari, cinema_short in orari_cinema_list:
+                        orari_con_cinema = [f"{ora} ({cinema_short})" for ora in orari]
+                        orari_str = " • ".join(orari_con_cinema)
+                        lines.append(f"      🕐 {orari_str}")
+        else:
+            # Se non c'è programmazione dettagliata, mostra solo i cinema
+            if film_data["cinema"]:
+                cinema_str = ", ".join(film_data["cinema"])
+                lines.append(f"   🎭 {cinema_str}")
+        
         lines.append("")
     
     # Footer
@@ -411,7 +447,7 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
         try:
             dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
             data_ita = dt.strftime("%d/%m/%Y alle %H:%M")
-            lines.append(f"_Aggiornato il {data_ita}_")
+            lines.append(f"Aggiornato il {data_ita}")
         except:
             pass
     
