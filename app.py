@@ -5,9 +5,9 @@ Server Flask per esporre lo scraper dei cinema di Matera come API HTTP.
 Può essere chiamato da Make.com o altri servizi web.
 """
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, Response
 from flask_cors import CORS
-from scraper import scrape_cinema, CINEMA_URLS
+from scraper import scrape_cinema, CINEMA_URLS, format_telegram_message
 from datetime import datetime
 import traceback
 
@@ -21,7 +21,8 @@ def index():
         "service": "Matera Film Scraper API",
         "description": "API per ottenere i film in programmazione nei cinema di Matera",
         "endpoints": {
-            "/api/films": "GET - Ottiene tutti i film dai 3 cinema",
+            "/api/films": "GET - Ottiene tutti i film dai 3 cinema (JSON)",
+            "/api/films/telegram": "GET - Ottiene messaggio formattato per Telegram",
             "/api/films/<cinema_name>": "GET - Ottiene i film di un cinema specifico",
             "/health": "GET - Controlla lo stato del servizio"
         },
@@ -103,6 +104,39 @@ def get_cinema_films(cinema_name):
             "timestamp": datetime.now().isoformat(),
             "cinema": [cinema_data]
         }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+@app.route('/api/films/telegram', methods=['GET'])
+def get_telegram_message():
+    """
+    Endpoint che restituisce un messaggio formattato per Telegram.
+    Perfetto per inviare direttamente a un bot Telegram o un canale.
+    """
+    try:
+        result = {
+            "timestamp": datetime.now().isoformat(),
+            "cinema": []
+        }
+        
+        # Scrape tutti i cinema
+        for cinema_name, url in CINEMA_URLS.items():
+            cinema_data = scrape_cinema(url, cinema_name)
+            result["cinema"].append(cinema_data)
+        
+        # Genera messaggio Telegram
+        telegram_msg = format_telegram_message(result)
+        
+        # Restituisci come testo plain con encoding UTF-8
+        return Response(
+            telegram_msg,
+            mimetype='text/plain; charset=utf-8',
+            headers={'Content-Disposition': 'inline'}
+        ), 200
         
     except Exception as e:
         return jsonify({

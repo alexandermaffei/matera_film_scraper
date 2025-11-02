@@ -332,6 +332,91 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
         "film": films
     }
 
+def format_telegram_message(data: Dict[str, Any]) -> str:
+    """
+    Formatta i dati dei film in un messaggio per Telegram con emoji e formato leggibile.
+    
+    Args:
+        data: Dizionario con i dati dei cinema e film
+        
+    Returns:
+        Stringa formattata per Telegram
+    """
+    lines = []
+    lines.append("🎬 *FILM IN PROGRAMMAZIONE - MATERA*\n")
+    
+    for cinema in data.get("cinema", []):
+        cinema_name = cinema.get("cinema", "")
+        films = cinema.get("film", [])
+        
+        if not films:
+            continue
+        
+        # Emoji per cinema (puoi personalizzare)
+        cinema_emoji = "🎭"  # Default
+        if "UCI" in cinema_name:
+            cinema_emoji = "🎪"
+        elif "Comunale" in cinema_name:
+            cinema_emoji = "🏛️"
+        elif "Piccolo" in cinema_name:
+            cinema_emoji = "🎨"
+        
+        lines.append(f"{cinema_emoji} *{cinema_name}*")
+        lines.append("")
+        
+        for film in films:
+            titolo = film.get("titolo", "")
+            programmazione = film.get("programmazione", [])
+            
+            if not programmazione:
+                # Usa gli orari della pagina principale se non c'è programmazione dettagliata
+                orari = film.get("orari", [])
+                if orari:
+                    lines.append(f"📽️ *{titolo}*")
+                    orari_str = " • ".join(orari)
+                    lines.append(f"   🕐 {orari_str}")
+                    lines.append("")
+            else:
+                # Usa la programmazione completa con date
+                lines.append(f"📽️ *{titolo}*")
+                
+                # Raggruppa per data
+                for prog in programmazione:
+                    data_str = prog.get("data", "")
+                    giorno = prog.get("giorno", "")
+                    orari = prog.get("orari", [])
+                    
+                    if orari:
+                        # Formatta la data in modo più leggibile (es. "02/11 - domenica")
+                        try:
+                            date_parts = data_str.split("-")
+                            if len(date_parts) == 3:
+                                data_breve = f"{date_parts[2]}/{date_parts[1]}"
+                                lines.append(f"   📅 {data_breve} ({giorno})")
+                                orari_str = " • ".join(orari)
+                                lines.append(f"      🕐 {orari_str}")
+                        except:
+                            lines.append(f"   📅 {data_str} ({giorno})")
+                            orari_str = " • ".join(orari)
+                            lines.append(f"      🕐 {orari_str}")
+                
+                lines.append("")
+        
+        lines.append("─" * 30)
+        lines.append("")
+    
+    # Footer
+    timestamp = data.get("timestamp", "")
+    if timestamp:
+        try:
+            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            data_ita = dt.strftime("%d/%m/%Y alle %H:%M")
+            lines.append(f"_Aggiornato il {data_ita}_")
+        except:
+            pass
+    
+    return "\n".join(lines)
+
 def main():
     """
     Funzione principale che esegue lo scraping di tutti i cinema.
@@ -356,6 +441,17 @@ def main():
     print(f"\nDati salvati in {output_file}")
     print(f"Totale cinema: {len(all_data['cinema'])}")
     print(f"Totale film: {sum(len(c['film']) for c in all_data['cinema'])}")
+    
+    # Genera messaggio Telegram
+    telegram_msg = format_telegram_message(all_data)
+    telegram_file = "messaggio_telegram.txt"
+    with open(telegram_file, 'w', encoding='utf-8') as f:
+        f.write(telegram_msg)
+    
+    print(f"\nMessaggio Telegram salvato in {telegram_file}")
+    print("\n" + "="*50)
+    print(telegram_msg)
+    print("="*50)
 
 if __name__ == "__main__":
     main()
