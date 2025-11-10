@@ -32,6 +32,32 @@ python scraper.py
 
 Genererà un file `programmazione_cinema_matera.json` con tutti i dati.
 
+### Ricerca film su Trakt (TMDB/IMDB)
+
+Per trovare rapidamente gli ID TMDB o IMDB a partire dal titolo del film, usa lo script `trakt_search.py`.
+
+1. Esporta le tue credenziali Trakt (non inserirle nel codice!):
+   ```bash
+   export TRAKT_CLIENT_ID="110995ce03b0765434c85ddf9354508121f36bf3f10fbce11e814e0dbb818da1"
+   # Il client secret non è necessario per la sola ricerca pubblica
+   ```
+
+2. Esegui la ricerca:
+   ```bash
+   python trakt_search.py "Bugonia" --year 2025 --limit 3
+   ```
+
+   Output di esempio:
+   ```
+   1. Bugonia (2025)
+      Score: 980.0
+      Trakt slug: bugonia-2025
+      TMDB: https://www.themoviedb.org/movie/123456
+      IMDB: https://www.imdb.com/title/tt1234567/
+   ```
+
+Lo script usa l'endpoint pubblico `/search/movie` di Trakt e restituisce già i link diretti TMDB/IMDB quando disponibili.
+
 ### Come API HTTP (per Make.com)
 
 Avvia il server Flask:
