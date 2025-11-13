@@ -365,6 +365,7 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
         return f"{format_date(start_date)} → {format_date(end_date)}"
 
     films = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+    film_meta = {}
 
     for cinema in data.get('cinema', []):
         cinema_name = cinema.get('cinema', '')
@@ -373,6 +374,13 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
             title = film.get('titolo')
             if not title:
                 continue
+            imdb_id = film.get('imdb')
+            imdb_url = film.get('imdb_url')
+            if imdb_url:
+                film_meta.setdefault(title, {})['imdb_url'] = imdb_url
+            elif imdb_id:
+                film_meta.setdefault(title, {})['imdb_url'] = f"https://www.imdb.com/title/{imdb_id}/"
+
             for prog in film.get('programmazione', []):
                 date = prog.get('data')
                 for time in prog.get('orari', []):
@@ -381,7 +389,12 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
                     films[title][cinema_short][date].add(time.replace('.', ':'))
 
     for title in sorted(films):
-        lines.append(f"📽️ {title}")
+        imdb_url = film_meta.get(title, {}).get('imdb_url')
+        if imdb_url:
+            lines.append(f"📽️ {title} · {imdb_url}")
+        else:
+            lines.append(f"📽️ {title}")
+
         cinema_map = films[title]
         for cinema_short in sorted(cinema_map):
             date_map = cinema_map[cinema_short]

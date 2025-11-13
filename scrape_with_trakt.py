@@ -58,10 +58,13 @@ def main() -> None:
                     "trakt": None,
                     "tmdb": None,
                     "imdb": None,
+                    "imdb_url": None,
+                    "entries": [film],
                 }
             else:
                 unique_films[title]["cinema"].append(cinema["cinema"])
                 unique_films[title]["programmazione"].extend(film.get("programmazione", []))
+                unique_films[title]["entries"].append(film)
 
     print("\nRicerca su Trakt per ogni film...")
 
@@ -80,15 +83,36 @@ def main() -> None:
         film_info["trakt"] = result.get("slug")
         film_info["tmdb"] = result.get("tmdb")
         film_info["imdb"] = result.get("imdb")
+        film_info["imdb_url"] = (
+            f"https://www.imdb.com/title/{film_info['imdb']}/" if film_info["imdb"] else None
+        )
+
+        for entry in film_info.get("entries", []):
+            entry["trakt"] = film_info["trakt"]
+            entry["tmdb"] = film_info["tmdb"]
+            entry["imdb"] = film_info["imdb"]
+            entry["imdb_url"] = film_info["imdb_url"]
 
         print(
             f"  ✅ {title}: TMDB {film_info['tmdb']} | IMDB {film_info['imdb']}"
         )
 
     # Salva JSON arricchito
+    enriched_films = {}
+    for title, info in unique_films.items():
+        enriched_films[title] = {
+            "title": info["title"],
+            "cinema": info["cinema"],
+            "programmazione": info["programmazione"],
+            "trakt": info["trakt"],
+            "tmdb": info["tmdb"],
+            "imdb": info["imdb"],
+            "imdb_url": info["imdb_url"],
+        }
+
     enriched = {
         "timestamp": all_data.get("timestamp"),
-        "films": unique_films,
+        "films": enriched_films,
     }
     OUTPUT_ENRICHED.write_text(json.dumps(enriched, ensure_ascii=False, indent=2))
 
