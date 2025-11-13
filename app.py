@@ -5,14 +5,43 @@ Server Flask per esporre lo scraper dei cinema di Matera come API HTTP.
 Può essere chiamato da Make.com o altri servizi web.
 """
 
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
 from scraper import scrape_cinema, CINEMA_URLS, format_telegram_message
+from trakt_enrich import enrich_with_trakt, MissingTraktCredentials
 from datetime import datetime
 import traceback
 
 app = Flask(__name__)
 CORS(app)  # Abilita CORS per permettere chiamate da Make.com
+
+def _parse_bool(value):
+    if value is None:
+        return False
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _scrape_all_cinemas(enrich=False):
+    data = {
+        "timestamp": datetime.now().isoformat(),
+        "cinema": [],
+    }
+
+    for cinema_name, url in CINEMA_URLS.items():
+        cinema_data = scrape_cinema(url, cinema_name)
+        data["cinema"].append(cinema_data)
+
+    aggregated = None
+    if enrich:
+        aggregated = enrich_with_trakt(data["cinema"])
+
+    total_films = sum(len(c['film']) for c in data["cinema"])
+    data["statistics"] = {
+        "total_cinema": len(data["cinema"]),
+        "total_films": total_films,
+    }
+
+    return data, aggregated
 
 @app.route('/')
 def index():
@@ -39,30 +68,15 @@ def health():
 
 @app.route('/api/films', methods=['GET'])
 def get_all_films():
-    """
-    Endpoint principale che restituisce tutti i film dai 3 cinema.
-    Questo è l'endpoint da chiamare da Make.com.
-    """
+    """Restituisce tutti i film; usa ?enrich=1 per includere metadata Trakt."""
     try:
-        result = {
-            "timestamp": datetime.now().isoformat(),
-            "cinema": []
-        }
-        
-        # Scrape tutti i cinema
-        for cinema_name, url in CINEMA_URLS.items():
-            cinema_data = scrape_cinema(url, cinema_name)
-            result["cinema"].append(cinema_data)
-        
-        # Calcola statistiche
-        total_films = sum(len(c['film']) for c in result["cinema"])
-        result["statistics"] = {
-            "total_cinema": len(result["cinema"]),
-            "total_films": total_films
-        }
-        
-        return jsonify(result), 200
-        
+        enrich = _parse_bool(request.args.get('enrich'))
+        data, aggregated = _scrape_all_cinemas(enrich=enrich)
+        if aggregated is not None:
+            data["trakt_enriched"] = aggregated
+        return jsonify(data), 200
+    except MissingTraktCredentials as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as e:
         return jsonify({
             "error": str(e),
@@ -113,31 +127,18 @@ def get_cinema_films(cinema_name):
 
 @app.route('/api/films/telegram', methods=['GET'])
 def get_telegram_message():
-    """
-    Endpoint che restituisce un messaggio formattato per Telegram.
-    Perfetto per inviare direttamente a un bot Telegram o un canale.
-    """
+    """Restituisce il messaggio formattato per Telegram. Usa ?enrich=1 per includere link IMDb."""
     try:
-        result = {
-            "timestamp": datetime.now().isoformat(),
-            "cinema": []
-        }
-        
-        # Scrape tutti i cinema
-        for cinema_name, url in CINEMA_URLS.items():
-            cinema_data = scrape_cinema(url, cinema_name)
-            result["cinema"].append(cinema_data)
-        
-        # Genera messaggio Telegram
-        telegram_msg = format_telegram_message(result)
-        
-        # Restituisci come testo plain con encoding UTF-8
+        enrich = _parse_bool(request.args.get('enrich'))
+        data, _ = _scrape_all_cinemas(enrich=enrich)
+        telegram_msg = format_telegram_message(data)
         return Response(
             telegram_msg,
             mimetype='text/plain; charset=utf-8',
             headers={'Content-Disposition': 'inline'}
         ), 200
-        
+    except MissingTraktCredentials as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as e:
         return jsonify({
             "error": str(e),

@@ -95,10 +95,13 @@ Il server sarà disponibile su `http://localhost:5000`
 
 ### Endpoint disponibili
 
+
+> ⚠️ Per utilizzare `?enrich=1` sugli endpoint HTTP è necessario definire la variabile di ambiente `TRAKT_CLIENT_ID` sul server (non serve il secret). Se assente, l'API risponde con HTTP 400.
 - `GET /` - Informazioni sul servizio
 - `GET /health` - Controllo dello stato del servizio
-- `GET /api/films` - Ottiene tutti i film dai 3 cinema (endpoint principale per Make.com)
+- `GET /api/films` - Ottiene tutti i film dai 3 cinema (endpoint principale per Make.com). Usa `?enrich=1` per includere metadata Trakt (tmdb/imdb) nella risposta.
 - `GET /api/films/<cinema_name>` - Ottiene i film di un cinema specifico
+- `GET /api/films/telegram` - Messaggio formattato per Telegram (`?enrich=1` aggiunge link IMDb)
 
 ### Esempio di risposta JSON
 
