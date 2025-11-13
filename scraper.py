@@ -333,124 +333,94 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
     }
 
 def format_telegram_message(data: Dict[str, Any]) -> str:
-    """
-    Formatta i dati dei film in un messaggio per Telegram con emoji e formato leggibile.
-    Raggruppa per film invece che per cinema.
-    
-    Args:
-        data: Dizionario con i dati dei cinema e film
-        
-    Returns:
-        Stringa formattata per Telegram
-    """
-    from collections import defaultdict
+    """Format Telegram message grouped by film with compact date ranges."""
+    from collections import defaultdict, OrderedDict
     from datetime import datetime as dt_class
-    
-    lines = []
-    lines.append("🎬 FILM IN PROGRAMMAZIONE - MATERA\n")
-    
-    # Mappa nomi cinema completi a nomi brevi
+
+    lines = ["🎬 FILM IN PROGRAMMAZIONE - MATERA\n"]
+
     cinema_short_names = {
         "Cinema Comunale Guerrieri": "Guerrieri",
         "Il Piccolo": "Piccolo",
-        "UCI Cinemas Red Carpet": "Red Carpet"
+        "UCI Cinemas Red Carpet": "Red Carpet",
     }
-    
-    # Mappa nomi mesi in italiano
+
     mesi_italiano = {
         '01': 'gennaio', '02': 'febbraio', '03': 'marzo', '04': 'aprile',
         '05': 'maggio', '06': 'giugno', '07': 'luglio', '08': 'agosto',
         '09': 'settembre', '10': 'ottobre', '11': 'novembre', '12': 'dicembre'
     }
-    
-    # Raccogli tutti i film raggruppati per titolo
-    films_dict = defaultdict(lambda: {
-        "cinema": [],
-        "programmazione": defaultdict(list)  # data -> lista di (orari, cinema)
-    })
-    
-    for cinema in data.get("cinema", []):
-        cinema_name = cinema.get("cinema", "")
+
+    def format_date(date_str: str) -> str:
+        anno, mese, giorno = date_str.split('-')
+        return f"{int(giorno)} {mesi_italiano.get(mese, mese)}"
+
+    def format_range(start_date: str, end_date: str) -> str:
+        if start_date == end_date:
+            return format_date(start_date)
+        a_y, a_m, a_d = start_date.split('-')
+        b_y, b_m, b_d = end_date.split('-')
+        if a_y == b_y and a_m == b_m:
+            return f"{int(a_d)}-{int(b_d)} {mesi_italiano.get(a_m, a_m)}"
+        return f"{format_date(start_date)} → {format_date(end_date)}"
+
+    films = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+
+    for cinema in data.get('cinema', []):
+        cinema_name = cinema.get('cinema', '')
         cinema_short = cinema_short_names.get(cinema_name, cinema_name)
-        films = cinema.get("film", [])
-        
-        for film in films:
-            titolo = film.get("titolo", "")
-            programmazione = film.get("programmazione", [])
-            
-            if not programmazione:
-                # Usa gli orari della pagina principale se non c'è programmazione dettagliata
-                orari = film.get("orari", [])
-                if orari:
-                    # Aggiungi a una data fittizia "oggi" o crea una voce generica
-                    films_dict[titolo]["cinema"].append(cinema_short)
-            else:
-                # Usa la programmazione completa con date
-                for prog in programmazione:
-                    data_str = prog.get("data", "")
-                    orari = prog.get("orari", [])
-                    
-                    if orari:
-                        # Raggruppa per data: data -> [(orari, cinema), ...]
-                        films_dict[titolo]["programmazione"][data_str].append((orari, cinema_short))
-    
-    # Ordina i film per titolo
-    sorted_films = sorted(films_dict.items())
-    
-    # Genera output per ogni film
-    for titolo, film_data in sorted_films:
-        lines.append(f"📽️ {titolo}")
-        
-        # Raggruppa programmazione per data (ordina le date)
-        programmazione_sorted = sorted(film_data["programmazione"].items())
-        
-        if programmazione_sorted:
-            for data_str, orari_cinema_list in programmazione_sorted:
-                # Estrai giorno della settimana e formatta data
-                try:
-                    date_parts = data_str.split("-")
-                    if len(date_parts) == 3:
-                        anno, mese, giorno_num = date_parts
-                        
-                        mese_nome = mesi_italiano.get(mese, mese)
-                        giorno_int = int(giorno_num)
-                        
-                        # Formatta: "2 novembre" (senza giorno della settimana)
-                        data_formattata = f"{giorno_int} {mese_nome}"
-                        
-                        lines.append(f"   📅 {data_formattata}")
-                        
-                        # Raggruppa orari per data e mostra con cinema
-                        for orari, cinema_short in orari_cinema_list:
-                            # Formatta ogni orario con il cinema
-                            orari_con_cinema = [f"{ora} ({cinema_short})" for ora in orari]
-                            orari_str = " • ".join(orari_con_cinema)
-                            lines.append(f"      🕐 {orari_str}")
-                except Exception as e:
-                    # Fallback se errore nel parsing della data
-                    lines.append(f"   📅 {data_str}")
-                    for orari, cinema_short in orari_cinema_list:
-                        orari_con_cinema = [f"{ora} ({cinema_short})" for ora in orari]
-                        orari_str = " • ".join(orari_con_cinema)
-                        lines.append(f"      🕐 {orari_str}")
-        else:
-            # Se non c'è programmazione dettagliata, mostra solo i cinema
-            if film_data["cinema"]:
-                cinema_str = ", ".join(film_data["cinema"])
-                lines.append(f"   🎭 {cinema_str}")
-        
+        for film in cinema.get('film', []):
+            title = film.get('titolo')
+            if not title:
+                continue
+            for prog in film.get('programmazione', []):
+                date = prog.get('data')
+                for time in prog.get('orari', []):
+                    if not date or not time:
+                        continue
+                    films[title][cinema_short][date].add(time.replace('.', ':'))
+
+    for title in sorted(films):
+        lines.append(f"📽️ {title}")
+        cinema_map = films[title]
+        for cinema_short in sorted(cinema_map):
+            date_map = cinema_map[cinema_short]
+            ordered_dates = sorted(date_map)
+            normalized = OrderedDict((d, sorted(date_map[d])) for d in ordered_dates)
+
+            groups = []
+            current_start = current_end = None
+            current_times = None
+            for date in normalized:
+                times = normalized[date]
+                date_obj = dt_class.fromisoformat(date)
+                if current_times is None:
+                    current_start = current_end = date
+                    current_times = times
+                elif times == current_times and (date_obj - dt_class.fromisoformat(current_end)).days == 1:
+                    current_end = date
+                else:
+                    groups.append((current_start, current_end, current_times))
+                    current_start = current_end = date
+                    current_times = times
+            if current_times is not None:
+                groups.append((current_start, current_end, current_times))
+
+            for start_date, end_date, times in groups:
+                date_label = format_range(start_date, end_date)
+                orari_str = " • ".join(times)
+                lines.append(f"   📅 {date_label} · {cinema_short}")
+                lines.append(f"      🕐 {orari_str}")
         lines.append("")
-    
-    # Footer
-    timestamp = data.get("timestamp", "")
+
+    timestamp = data.get('timestamp')
     if timestamp:
         try:
-            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            data_ita = dt.strftime("%d/%m/%Y alle %H:%M")
-            lines.append(f"Aggiornato il {data_ita}")
-        except:
+            dt_obj = dt_class.fromisoformat(timestamp.replace('Z', '+00:00'))
+            lines.append(f"Aggiornato il {dt_obj.strftime('%d/%m/%Y alle %H:%M')}")
+        except Exception:
             pass
-    
+
     return "\n".join(lines)
 
 def main():

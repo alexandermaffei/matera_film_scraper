@@ -34,6 +34,32 @@ Genererà un file `programmazione_cinema_matera.json` con tutti i dati.
 
 ### Ricerca film su Trakt (TMDB/IMDB)
 
+### Scraping completo con Trakt (programmazione + link)
+
+Per scrappare la programmazione e arricchirla automaticamente con i link TMDB/IMDB utilizzare:
+
+```bash
+export TRAKT_CLIENT_ID="110995ce03b0765434c85ddf9354508121f36bf3f10fbce11e814e0dbb818da1"
+source venv/bin/activate
+python scrape_with_trakt.py
+```
+
+Output generato:
+- `programmazione_cinema_matera.json` → dati base
+- `programmazione_cinema_matera_with_trakt.json` → dati arricchiti con slug Trakt + link TMDB/IMDB
+- `messaggio_telegram.txt` → messaggio compatto pronto per l'invio
+
+Esempio (estratto):
+```
+🎬 FILM IN PROGRAMMAZIONE - MATERA
+
+📽️ Dracula: L'Amore Perduto
+   📅 13-16 novembre · Red Carpet
+      🕐 16:20 • 18:50 • 21:40
+   📅 17-18 novembre · Red Carpet
+      🕐 19:10 • 21:40
+```
+
 Per trovare rapidamente gli ID TMDB o IMDB a partire dal titolo del film, usa lo script `trakt_search.py`.
 
 1. Esporta le tue credenziali Trakt (non inserirle nel codice!):
