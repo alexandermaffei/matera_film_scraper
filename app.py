@@ -7,7 +7,16 @@ Può essere chiamato da Make.com o altri servizi web.
 
 from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
-from scraper import scrape_cinema, CINEMA_URLS, format_telegram_message
+from scraper import (
+    scrape_cinema,
+    CINEMA_URLS,
+    format_telegram_message,
+    report_window_dates,
+    REPORT_WINDOW_DAYS,
+    apply_report_window,
+    scrape_uci_official_window,
+    merge_red_carpet_with_uci,
+)
 from trakt_enrich import enrich_with_trakt, MissingTraktCredentials
 from datetime import datetime
 import traceback
@@ -22,13 +31,23 @@ def _parse_bool(value):
 
 
 def _scrape_all_cinemas(enrich=False):
+    allowed_dates = report_window_dates(REPORT_WINDOW_DAYS)
     data = {
         "timestamp": datetime.now().isoformat(),
+        "report_window": {
+            "days": REPORT_WINDOW_DAYS,
+            "from": allowed_dates[0],
+            "to": allowed_dates[-1],
+        },
         "cinema": [],
     }
 
     for cinema_name, url in CINEMA_URLS.items():
         cinema_data = scrape_cinema(url, cinema_name)
+        cinema_data = apply_report_window(cinema_data, allowed_dates)
+        if cinema_name == "UCI Cinemas Red Carpet":
+            uci_films = scrape_uci_official_window(allowed_dates)
+            cinema_data["film"] = merge_red_carpet_with_uci(cinema_data.get("film", []), uci_films)
         data["cinema"].append(cinema_data)
 
     aggregated = None

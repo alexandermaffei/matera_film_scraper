@@ -9,8 +9,10 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any
+from collections import defaultdict
+import unicodedata
 
 # URL dei cinema di Matera
 CINEMA_URLS = {
@@ -18,6 +20,10 @@ CINEMA_URLS = {
     "Il Piccolo": "https://www.comingsoon.it/cinema/matera/il-piccolo/4976/",
     "UCI Cinemas Red Carpet": "https://www.comingsoon.it/cinema/matera/uci-cinemas-red-carpet/5635/"
 }
+
+UCI_THEATRE_SLUG = "uci-cinemas-redcarpet-matera"
+UCI_API_BASE_URL = "https://uci-backend-production-1042268733238.europe-west8.run.app/api"
+REPORT_WINDOW_DAYS = 7
 
 def get_page(url: str) -> BeautifulSoup:
     """
@@ -39,6 +45,279 @@ def get_page(url: str) -> BeautifulSoup:
     except requests.RequestException as e:
         print(f"Errore nel caricare {url}: {e}")
         return None
+
+
+def normalize_title(title: str) -> str:
+    """Normalizza un titolo film per confronti tra fonti diverse."""
+    if not title:
+        return ""
+    normalized = unicodedata.normalize("NFKD", title)
+    normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+    normalized = normalized.lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return normalized.strip()
+
+
+def report_window_dates(window_days: int = REPORT_WINDOW_DAYS) -> List[str]:
+    """Ritorna le date ISO da oggi per i successivi N giorni (incluso oggi)."""
+    today = datetime.now().date()
+    return [(today + timedelta(days=i)).isoformat() for i in range(window_days)]
+
+
+def filter_programmazione_by_dates(programmazione: List[Dict[str, Any]], allowed_dates: List[str]) -> List[Dict[str, Any]]:
+    """Filtra la programmazione in base alla finestra temporale desiderata."""
+    allowed = set(allowed_dates)
+    filtered = [p for p in programmazione if p.get("data") in allowed and p.get("orari")]
+    filtered.sort(key=lambda x: x.get("data", ""))
+    return filtered
+
+
+def fetch_uci_programming_for_date(day_iso: str) -> List[Dict[str, Any]]:
+    """Recupera la programmazione UCI del giorno dal backend ufficiale."""
+    url = f"{UCI_API_BASE_URL}/theatres/{UCI_THEATRE_SLUG}/programming/{day_iso}"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Referer": "https://ucicinemas.it",
+        "User-Agent": "Mozilla/5.0",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        return payload.get("data", []) if isinstance(payload, dict) else []
+    except requests.RequestException as e:
+        print(f"Errore nel caricare la programmazione UCI ({day_iso}): {e}")
+        return []
+    except ValueError:
+        print(f"Risposta JSON non valida da UCI per {day_iso}")
+        return []
+
+
+def scrape_uci_official_window(allowed_dates: List[str]) -> List[Dict[str, Any]]:
+    """
+    Scrape della programmazione UCI ufficiale nella finestra data.
+    Restituisce una lista film nello stesso formato usato dal progetto.
+    """
+    by_title: Dict[str, Dict[str, Any]] = {}
+
+    for day_iso in allowed_dates:
+        day_films = fetch_uci_programming_for_date(day_iso)
+        for film in day_films:
+            title = film.get("title")
+            if not title:
+                continue
+
+            if title not in by_title:
+                by_title[title] = {
+                    "titolo": title,
+                    "orari": [],
+                    "sala": None,
+                    "programmazione": defaultdict(set),
+                    "programmazione_vo": defaultdict(set),
+                    "programmazione_non_vo": defaultdict(set),
+                    "source": ["uci_official"],
+                    "lingua_originale": False,
+                    "lingue_disponibili": set(),
+                }
+
+            screens = film.get("screens", [])
+            for screen_group in screens:
+                if not isinstance(screen_group, dict):
+                    continue
+                for variants in screen_group.values():
+                    if not isinstance(variants, list):
+                        continue
+                    for variant in variants:
+                        language = (variant.get("language") or {}).get("name")
+                        lang_slug = ((variant.get("language") or {}).get("slug") or "").upper()
+                        subtitles_name = (variant.get("subtitles") or {}).get("name")
+                        is_vo_variant = lang_slug in {"EN", "ENG"} or (
+                            language and language.upper() in {"EN", "ENG", "ENGLISH"}
+                        )
+                        if language:
+                            by_title[title]["lingue_disponibili"].add(language)
+                        if subtitles_name:
+                            by_title[title]["lingue_disponibili"].add(f"sottotitoli {subtitles_name}")
+                        # Consideriamo VO quando la traccia audio non e' italiana
+                        if is_vo_variant:
+                            by_title[title]["lingua_originale"] = True
+
+                        performances = variant.get("performances", [])
+                        for perf in performances:
+                            perf_day = perf.get("day")
+                            perf_time = perf.get("actual_start_at")
+                            if not perf_day or not perf_time or perf_day not in allowed_dates:
+                                continue
+                            by_title[title]["programmazione"][perf_day].add(perf_time)
+                            target_key = "programmazione_vo" if is_vo_variant else "programmazione_non_vo"
+                            by_title[title][target_key][perf_day].add(perf_time)
+
+    films = []
+    for title in sorted(by_title):
+        schedule_map = by_title[title]["programmazione"]
+        schedule_vo_map = by_title[title]["programmazione_vo"]
+        schedule_non_vo_map = by_title[title]["programmazione_non_vo"]
+        programmazione = []
+        programmazione_vo = []
+        programmazione_non_vo = []
+        all_times = set()
+        for date_str in sorted(schedule_map):
+            times = sorted(schedule_map[date_str])
+            all_times.update(t.replace(":", ".") for t in times)
+            programmazione.append({
+                "data": date_str,
+                "giorno": "",
+                "orari": times,
+            })
+        for date_str in sorted(schedule_vo_map):
+            programmazione_vo.append({
+                "data": date_str,
+                "giorno": "",
+                "orari": sorted(schedule_vo_map[date_str]),
+            })
+        for date_str in sorted(schedule_non_vo_map):
+            programmazione_non_vo.append({
+                "data": date_str,
+                "giorno": "",
+                "orari": sorted(schedule_non_vo_map[date_str]),
+            })
+
+        films.append({
+            "titolo": title,
+            "orari": sorted(all_times),
+            "sala": None,
+            "programmazione": programmazione,
+            "programmazione_vo": programmazione_vo,
+            "programmazione_non_vo": programmazione_non_vo,
+            "source": ["uci_official"],
+            "lingua_originale": by_title[title].get("lingua_originale", False),
+            "lingue_disponibili": sorted(by_title[title].get("lingue_disponibili", set())),
+        })
+
+    return films
+
+
+def merge_film_entries(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    """Unisce due record film (ComingSoon + UCI) senza duplicati."""
+    merged = {
+        "titolo": base.get("titolo") or extra.get("titolo"),
+        "orari": sorted(set((base.get("orari") or []) + (extra.get("orari") or []))),
+        "sala": base.get("sala") or extra.get("sala"),
+        "programmazione": [],
+    }
+
+    base_vo = base.get("lingua_originale")
+    extra_vo = extra.get("lingua_originale")
+    if base_vo is True or extra_vo is True:
+        merged["lingua_originale"] = True
+    elif base_vo is False and extra_vo is False:
+        merged["lingua_originale"] = False
+    else:
+        # Nessuna fonte certa: lasciamo sconosciuto
+        merged["lingua_originale"] = None
+
+    lingue = sorted(set((base.get("lingue_disponibili") or []) + (extra.get("lingue_disponibili") or [])))
+    if lingue:
+        merged["lingue_disponibili"] = lingue
+
+    source = []
+    for s in (base.get("source") or []) + (extra.get("source") or []):
+        if s not in source:
+            source.append(s)
+    if source:
+        merged["source"] = source
+
+    prog_map: Dict[str, set] = defaultdict(set)
+    day_map: Dict[str, str] = {}
+    for item in (base.get("programmazione") or []) + (extra.get("programmazione") or []):
+        date_str = item.get("data")
+        if not date_str:
+            continue
+        for time in item.get("orari", []):
+            prog_map[date_str].add(time)
+        if item.get("giorno"):
+            day_map[date_str] = item.get("giorno")
+
+    for date_str in sorted(prog_map):
+        merged["programmazione"].append({
+            "data": date_str,
+            "giorno": day_map.get(date_str, ""),
+            "orari": sorted(prog_map[date_str]),
+        })
+
+    def merge_programmazione_field(field_name: str) -> None:
+        f_map: Dict[str, set] = defaultdict(set)
+        for item in (base.get(field_name) or []) + (extra.get(field_name) or []):
+            date_str = item.get("data")
+            if not date_str:
+                continue
+            for time in item.get("orari", []):
+                f_map[date_str].add(time)
+        if f_map:
+            merged[field_name] = [
+                {"data": date_str, "giorno": "", "orari": sorted(f_map[date_str])}
+                for date_str in sorted(f_map)
+            ]
+
+    merge_programmazione_field("programmazione_vo")
+    merge_programmazione_field("programmazione_non_vo")
+
+    return merged
+
+
+def merge_red_carpet_with_uci(comingsoon_films: List[Dict[str, Any]], uci_films: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fonde i film del Red Carpet da ComingSoon e sito ufficiale UCI."""
+    merged_by_norm: Dict[str, Dict[str, Any]] = {}
+
+    for film in comingsoon_films:
+        film_copy = dict(film)
+        film_copy["source"] = ["comingsoon"]
+        if "lingua_originale" not in film_copy:
+            film_copy["lingua_originale"] = None
+        norm = normalize_title(film_copy.get("titolo", ""))
+        if not norm:
+            continue
+        merged_by_norm[norm] = film_copy
+
+    for film in uci_films:
+        norm = normalize_title(film.get("titolo", ""))
+        if not norm:
+            continue
+        if norm in merged_by_norm:
+            merged_by_norm[norm] = merge_film_entries(merged_by_norm[norm], film)
+        else:
+            merged_by_norm[norm] = film
+
+    merged_list = list(merged_by_norm.values())
+    merged_list.sort(key=lambda x: x.get("titolo", ""))
+    return merged_list
+
+
+def apply_report_window(cinema_data: Dict[str, Any], allowed_dates: List[str]) -> Dict[str, Any]:
+    """Applica il filtro della finestra report su un cinema."""
+    filtered_films = []
+    for film in cinema_data.get("film", []):
+        film_copy = dict(film)
+        film_copy["programmazione"] = filter_programmazione_by_dates(
+            film_copy.get("programmazione", []),
+            allowed_dates,
+        )
+        if "programmazione_vo" in film_copy:
+            film_copy["programmazione_vo"] = filter_programmazione_by_dates(
+                film_copy.get("programmazione_vo", []),
+                allowed_dates,
+            )
+        if "programmazione_non_vo" in film_copy:
+            film_copy["programmazione_non_vo"] = filter_programmazione_by_dates(
+                film_copy.get("programmazione_non_vo", []),
+                allowed_dates,
+            )
+        if "lingua_originale" not in film_copy:
+            film_copy["lingua_originale"] = None
+        filtered_films.append(film_copy)
+    cinema_data["film"] = filtered_films
+    return cinema_data
 
 def extract_dates_and_times_from_ticket_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
     """
@@ -364,7 +643,9 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
             return f"{int(a_d)}-{int(b_d)} {mesi_italiano.get(a_m, a_m)}"
         return f"{format_date(start_date)} → {format_date(end_date)}"
 
-    films = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+    films_all = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+    films_vo = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+    films_non_vo = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     film_meta = {}
 
     for cinema in data.get('cinema', []):
@@ -386,45 +667,89 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
                 for time in prog.get('orari', []):
                     if not date or not time:
                         continue
-                    films[title][cinema_short][date].add(time.replace('.', ':'))
+                    films_all[title][cinema_short][date].add(time.replace('.', ':'))
+            for prog in film.get('programmazione_vo', []):
+                date = prog.get('data')
+                for time in prog.get('orari', []):
+                    if not date or not time:
+                        continue
+                    films_vo[title][cinema_short][date].add(time.replace('.', ':'))
+            for prog in film.get('programmazione_non_vo', []):
+                date = prog.get('data')
+                for time in prog.get('orari', []):
+                    if not date or not time:
+                        continue
+                    films_non_vo[title][cinema_short][date].add(time.replace('.', ':'))
 
-    for title in sorted(films):
-        imdb_url = film_meta.get(title, {}).get('imdb_url')
-        if imdb_url:
-            lines.append(f"📽️ {title} · {imdb_url}")
+    vo_titles = []
+    regular_titles = []
+    for title in sorted(films_all):
+        is_vo = False
+        for cinema in data.get('cinema', []):
+            for film in cinema.get('film', []):
+                if film.get('titolo') == title and film.get('lingua_originale') is True:
+                    is_vo = True
+                    break
+            if is_vo:
+                break
+        if is_vo:
+            vo_titles.append(title)
         else:
-            lines.append(f"📽️ {title}")
+            regular_titles.append(title)
 
-        cinema_map = films[title]
+    def append_times_line(times: List[str]) -> None:
+        if len(times) > 5:
+            lines.append(f"      🕐 {len(times)} spettacoli - primo spettacolo: {times[0]}, ultimo spettacolo: {times[-1]}")
+        else:
+            lines.append(f"      🕐 {' • '.join(times)}")
+
+    def append_title_block(title: str, mark_vo: bool = False) -> None:
+        imdb_url = film_meta.get(title, {}).get('imdb_url')
+        title_prefix = "📽️ 🌐VO" if mark_vo else "📽️"
+        if imdb_url:
+            lines.append(f"{title_prefix} {title} · {imdb_url}")
+        else:
+            lines.append(f"{title_prefix} {title}")
+
+        if mark_vo:
+            cinema_map = films_vo[title]
+        else:
+            # Per i film VO mostriamo nella sezione "Altri" solo le proiezioni non VO.
+            if title in vo_titles:
+                cinema_map = films_non_vo[title]
+            else:
+                cinema_map = films_all[title]
+
+        if not cinema_map:
+            lines.append("   📅 Nessuna proiezione disponibile")
+            lines.append("")
+            return
+
         for cinema_short in sorted(cinema_map):
             date_map = cinema_map[cinema_short]
-            ordered_dates = sorted(date_map)
-            normalized = OrderedDict((d, sorted(date_map[d])) for d in ordered_dates)
-
-            groups = []
-            current_start = current_end = None
-            current_times = None
-            for date in normalized:
-                times = normalized[date]
-                date_obj = dt_class.fromisoformat(date)
-                if current_times is None:
-                    current_start = current_end = date
-                    current_times = times
-                elif times == current_times and (date_obj - dt_class.fromisoformat(current_end)).days == 1:
-                    current_end = date
-                else:
-                    groups.append((current_start, current_end, current_times))
-                    current_start = current_end = date
-                    current_times = times
-            if current_times is not None:
-                groups.append((current_start, current_end, current_times))
-
-            for start_date, end_date, times in groups:
-                date_label = format_range(start_date, end_date)
-                orari_str = " • ".join(times)
+            for date in sorted(date_map):
+                times = sorted(date_map[date])
+                date_label = format_date(date)
                 lines.append(f"   📅 {date_label} · {cinema_short}")
-                lines.append(f"      🕐 {orari_str}")
+                append_times_line(times)
         lines.append("")
+
+    if vo_titles:
+        lines.append("🌐 FILM IN LINGUA ORIGINALE")
+        lines.append("")
+        for title in vo_titles:
+            append_title_block(title, mark_vo=True)
+
+    regular_titles_with_non_vo = list(regular_titles)
+    for title in vo_titles:
+        if films_non_vo.get(title):
+            regular_titles_with_non_vo.append(title)
+
+    if regular_titles_with_non_vo:
+        lines.append("🎞️ ALTRI FILM")
+        lines.append("")
+        for title in sorted(regular_titles_with_non_vo):
+            append_title_block(title, mark_vo=False)
 
     timestamp = data.get('timestamp')
     if timestamp:
@@ -442,13 +767,27 @@ def main():
     """
     print("Inizio scraping dei cinema di Matera...")
     
+    allowed_dates = report_window_dates(REPORT_WINDOW_DAYS)
+
     all_data = {
         "timestamp": datetime.now().isoformat(),
+        "report_window": {
+            "days": REPORT_WINDOW_DAYS,
+            "from": allowed_dates[0],
+            "to": allowed_dates[-1]
+        },
         "cinema": []
     }
     
     for cinema_name, url in CINEMA_URLS.items():
         cinema_data = scrape_cinema(url, cinema_name)
+        cinema_data = apply_report_window(cinema_data, allowed_dates)
+
+        # Fusione dedicata per UCI Red Carpet: ComingSoon + sito ufficiale UCI
+        if cinema_name == "UCI Cinemas Red Carpet":
+            uci_films = scrape_uci_official_window(allowed_dates)
+            cinema_data["film"] = merge_red_carpet_with_uci(cinema_data.get("film", []), uci_films)
+
         all_data["cinema"].append(cinema_data)
         print(f"Trovati {len(cinema_data['film'])} film per {cinema_name}")
     
