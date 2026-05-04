@@ -23,6 +23,8 @@ CINEMA_URLS = {
 
 UCI_THEATRE_SLUG = "uci-cinemas-redcarpet-matera"
 UCI_API_BASE_URL = "https://uci-backend-production-1042268733238.europe-west8.run.app/api"
+WEBTIC_API_BASE_URL = "https://secure.webtic.it/api/wtjsonservices.ashx"
+WEBTIC_IL_PICCOLO_LOCAL_ID = 5357
 REPORT_WINDOW_DAYS = 7
 
 def get_page(url: str) -> BeautifulSoup:
@@ -70,6 +72,130 @@ def filter_programmazione_by_dates(programmazione: List[Dict[str, Any]], allowed
     filtered = [p for p in programmazione if p.get("data") in allowed and p.get("orari")]
     filtered.sort(key=lambda x: x.get("data", ""))
     return filtered
+
+
+def strip_ov_prefix(title: str) -> str:
+    """Rimuove prefissi VO dal titolo (es. '(O.V.)')."""
+    if not title:
+        return ""
+    cleaned = re.sub(r"^\s*\(?O\.?\s*V\.?\)?\s*", "", title, flags=re.I)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def is_ov_title(title: str) -> bool:
+    """Rileva titoli marcati come lingua originale in Webtic."""
+    if not title:
+        return False
+    return re.match(r"^\s*\(?O\.?\s*V\.?\)?", title, flags=re.I) is not None
+
+
+def scrape_il_piccolo_webtic(allowed_dates: List[str], local_id: int = WEBTIC_IL_PICCOLO_LOCAL_ID) -> List[Dict[str, Any]]:
+    """
+    Recupera la programmazione di Il Piccolo da Webtic.
+    Fallback gestito a livello chiamante: se fallisce ritorna [].
+    """
+    params = {
+        "localid": str(local_id),
+        "trackid": "33",
+        "wtid": "getFullScheduling",
+    }
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0",
+    }
+    try:
+        response = requests.get(WEBTIC_API_BASE_URL, params=params, headers=headers, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as e:
+        print(f"Errore nel caricare la programmazione Webtic Il Piccolo: {e}")
+        return []
+    except ValueError:
+        print("Risposta JSON non valida da Webtic Il Piccolo")
+        return []
+
+    events = payload.get("DS", {}).get("Scheduling", {}).get("Events", [])
+    if not isinstance(events, list):
+        return []
+
+    allowed = set(allowed_dates)
+    by_title: Dict[str, Dict[str, Any]] = {}
+
+    for event in events:
+        raw_title = event.get("Title", "")
+        title = strip_ov_prefix(raw_title)
+        if not title:
+            continue
+        is_vo = is_ov_title(raw_title)
+
+        if title not in by_title:
+            by_title[title] = {
+                "titolo": title,
+                "orari": set(),
+                "sala": None,
+                "programmazione": defaultdict(set),
+                "programmazione_vo": defaultdict(set),
+                "programmazione_non_vo": defaultdict(set),
+                "source": ["webtic"],
+                "lingua_originale": False,
+                "lingue_disponibili": set(),
+            }
+
+        if is_vo:
+            by_title[title]["lingua_originale"] = True
+            by_title[title]["lingue_disponibili"].add("OV")
+        else:
+            by_title[title]["lingue_disponibili"].add("ITA")
+
+        for day_block in event.get("Days", []):
+            for perf in day_block.get("Performances", []):
+                start_time = perf.get("StartTime")
+                if not start_time:
+                    continue
+                try:
+                    dt_obj = datetime.fromisoformat(start_time)
+                except ValueError:
+                    continue
+                day_iso = dt_obj.date().isoformat()
+                if day_iso not in allowed:
+                    continue
+                hhmm = dt_obj.strftime("%H:%M")
+                by_title[title]["orari"].add(hhmm.replace(":", "."))
+                by_title[title]["programmazione"][day_iso].add(hhmm)
+                target = "programmazione_vo" if is_vo else "programmazione_non_vo"
+                by_title[title][target][day_iso].add(hhmm)
+
+    films: List[Dict[str, Any]] = []
+    for title in sorted(by_title):
+        data = by_title[title]
+
+        def build_prog(field: str) -> List[Dict[str, Any]]:
+            out = []
+            for date_str in sorted(data[field]):
+                out.append({
+                    "data": date_str,
+                    "giorno": "",
+                    "orari": sorted(data[field][date_str]),
+                })
+            return out
+
+        # Teniamo solo film con almeno una proiezione nella finestra.
+        if not data["programmazione"]:
+            continue
+
+        films.append({
+            "titolo": title,
+            "orari": sorted(data["orari"]),
+            "sala": None,
+            "programmazione": build_prog("programmazione"),
+            "programmazione_vo": build_prog("programmazione_vo"),
+            "programmazione_non_vo": build_prog("programmazione_non_vo"),
+            "source": data["source"],
+            "lingua_originale": data["lingua_originale"],
+            "lingue_disponibili": sorted(data["lingue_disponibili"]),
+        })
+
+    return films
 
 
 def fetch_uci_programming_for_date(day_iso: str) -> List[Dict[str, Any]]:
@@ -601,6 +727,19 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
         Dizionario con i dati del cinema
     """
     print(f"Scraping {cinema_name}...")
+
+    if cinema_name == "Il Piccolo":
+        allowed_dates = report_window_dates(REPORT_WINDOW_DAYS)
+        webtic_films = scrape_il_piccolo_webtic(allowed_dates)
+        if webtic_films:
+            print(f"  Webtic: trovati {len(webtic_films)} film per Il Piccolo")
+            return {
+                "cinema": cinema_name,
+                "url": f"https://www.webtic.it/app/shop?action=loadLocal&localId={WEBTIC_IL_PICCOLO_LOCAL_ID}",
+                "film": webtic_films,
+            }
+        print("  Webtic non disponibile, fallback a ComingSoon")
+
     soup = get_page(url)
     
     films = extract_film_data(soup, cinema_name)
