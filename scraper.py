@@ -647,14 +647,30 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
     films_vo = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     films_non_vo = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     film_meta = {}
+    display_titles = {}
+
+    def canonical_title(raw_title: str) -> str:
+        """Normalizza il titolo per deduplicare varianti tipo 'C.A.'."""
+        if not raw_title:
+            return ""
+        t = raw_title.strip()
+        # Rimuove suffissi usati per "contenuto alternativo"
+        t = re.sub(r"\s*[\-–—]?\s*C\.?\s*A\.?\s*$", "", t, flags=re.I)
+        t = re.sub(r"\s*\(?(contenuto alternativo)\)?\s*$", "", t, flags=re.I)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
 
     for cinema in data.get('cinema', []):
         cinema_name = cinema.get('cinema', '')
         cinema_short = cinema_short_names.get(cinema_name, cinema_name)
         for film in cinema.get('film', []):
-            title = film.get('titolo')
+            raw_title = film.get('titolo')
+            if not raw_title:
+                continue
+            title = canonical_title(raw_title)
             if not title:
                 continue
+            display_titles.setdefault(title, title)
             imdb_id = film.get('imdb')
             imdb_url = film.get('imdb_url')
             if imdb_url:
@@ -687,7 +703,7 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
         is_vo = False
         for cinema in data.get('cinema', []):
             for film in cinema.get('film', []):
-                if film.get('titolo') == title and film.get('lingua_originale') is True:
+                if canonical_title(film.get('titolo', '')) == title and film.get('lingua_originale') is True:
                     is_vo = True
                     break
             if is_vo:
@@ -706,10 +722,11 @@ def format_telegram_message(data: Dict[str, Any]) -> str:
     def append_title_block(title: str, mark_vo: bool = False) -> None:
         imdb_url = film_meta.get(title, {}).get('imdb_url')
         title_prefix = "📽️ 🌐VO" if mark_vo else "📽️"
+        display_title = display_titles.get(title, title)
         if imdb_url:
-            lines.append(f"{title_prefix} {title} · {imdb_url}")
+            lines.append(f"{title_prefix} {display_title} · {imdb_url}")
         else:
-            lines.append(f"{title_prefix} {title}")
+            lines.append(f"{title_prefix} {display_title}")
 
         if mark_vo:
             cinema_map = films_vo[title]
