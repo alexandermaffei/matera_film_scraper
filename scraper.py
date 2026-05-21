@@ -816,10 +816,10 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
         "Il Piccolo": "Piccolo",
         "UCI Cinemas Red Carpet": "Red Carpet",
     }
-    cinema_abbrev = {
-        "Guerrieri": "G",
-        "Piccolo": "Pic",
-        "Red Carpet": "RC",
+    cinema_display = {
+        "Guerrieri": "Cinema Comunale Guerrieri",
+        "Piccolo": "Cinema Piccolo",
+        "Red Carpet": "Red Carpet",
     }
 
     mesi_italiano = {
@@ -843,7 +843,7 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
 
     include_imdb = level < 2
     group_dates = level < 4
-    compact_min = 3 if level <= 1 else 2
+    compact_min = 4 if level <= 2 else 2
     ultra = level >= 4
 
     lines = ["🎬 MATERA\n"] if level < 3 else ["🎬 MATERA\n"]
@@ -897,34 +897,37 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
             add_times(films_vo, film.get("programmazione_vo", []))
             add_times(films_non_vo, film.get("programmazione_non_vo", []))
 
-    def cinema_tag(name: str) -> str:
-        return cinema_abbrev.get(name, name[:3])
-
     def format_times(times: List[str]) -> str:
         if len(times) >= compact_min:
             if level >= 3:
-                return f"{len(times)}×{times[0]}-{times[-1]}"
+                return f"{len(times)} spett. {times[0]}-{times[-1]}"
             return f"{len(times)} spett. {times[0]}-{times[-1]}"
-        return " ".join(times)
+        if len(times) == 1:
+            return times[0]
+        if len(times) == 2:
+            return f"{times[0]} {times[1]}"
+        return "-".join(times)
 
     def schedule_lines(cinema_map) -> List[str]:
         out: List[str] = []
         for cinema_short in sorted(cinema_map):
             date_map = cinema_map[cinema_short]
-            cin = cinema_tag(cinema_short)
+            if not date_map:
+                continue
+            out.append(f"🎪 {cinema_display.get(cinema_short, cinema_short)}\n")
             if group_dates and not ultra:
                 for start, end, times in group_consecutive_dates(date_map):
                     label = format_range(start, end)
-                    out.append(f" {label} {cin} {format_times(times)}")
+                    out.append(f" {label} {format_times(times)}\n")
             elif ultra:
                 parts = []
                 for start, end, times in group_consecutive_dates(date_map):
                     parts.append(f"{format_range(start, end)} {format_times(times)}")
-                out.append(f" {cin}: {'; '.join(parts)}")
+                out.append(f" {'; '.join(parts)}\n")
             else:
                 for date in sorted(date_map):
                     times = sorted(date_map[date])
-                    out.append(f" {format_date(date)} {cin} {format_times(times)}")
+                    out.append(f" {format_date(date)} {format_times(times)}\n")
         return out
 
     def build_block(key: str, mark_vo: bool) -> str:
@@ -946,7 +949,7 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
         sched = schedule_lines(cinema_map)
         if not sched:
             return head + " —\n"
-        return head + "\n".join(sched) + "\n\n"
+        return head + "".join(sched) + "\n"
 
     vo_list = sorted(vo_keys)
     altri_keys = sorted(set(films_all.keys()) - vo_keys)
