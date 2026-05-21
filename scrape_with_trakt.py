@@ -79,10 +79,9 @@ def main() -> None:
     print(f"\nDati base salvati in {OUTPUT_JSON}")
     print(f"Dati arricchiti salvati in {OUTPUT_ENRICHED}")
 
-    # Aggiorna messaggio Telegram
     telegram_msg = format_telegram_message(all_data)
-    Path("messaggio_telegram.txt").write_text(telegram_msg)
-    print("Messaggio Telegram aggiornato in messaggio_telegram.txt")
+    Path("messaggio_telegram.txt").write_text(telegram_msg, encoding="utf-8")
+    print(f"Messaggio Telegram aggiornato in messaggio_telegram.txt ({len(telegram_msg)} caratteri)")
 
 
 if __name__ == "__main__":

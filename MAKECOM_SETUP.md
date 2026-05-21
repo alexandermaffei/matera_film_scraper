@@ -19,6 +19,8 @@
 
 ### Opzione 2: Endpoint Telegram (pronto per inviare a Telegram)
 
+L'API restituisce **un messaggio compatto** (≤ 4096 caratteri), pronto da copiare su WhatsApp o inviare su Telegram.
+
 **Module**: HTTP > Make a Request
 
 **Configuration**:
@@ -28,7 +30,7 @@
 - **Response format**: `Text` (o `Raw`)
 - **Timeout**: `30` (secondi)
 
-**Output**: Riceverai il messaggio già formattato con emoji, pronto per essere inviato direttamente a Telegram.
+**Output**: Testo formattato con date raggruppate, orari compatti e titoli deduplicati.
 
 ---
 
@@ -44,7 +46,7 @@
 2. **Telegram Module** (Send a Message):
    - Chat ID: (il tuo chat ID o ID del canale)
    - Text: `{{1.text}}` (output del modulo HTTP precedente)
-   - Parse mode: `Markdown` (per interpretare *bold*, emoji, etc.)
+   - Parse mode: `Markdown` (opzionale)
 
 ---
 
@@ -113,10 +115,7 @@ Se usi l'endpoint `/api/films`, riceverai:
 
 3. **Parsing**: Se usi il JSON, Make.com mapperà automaticamente i dati. Usa il visual mapper per vedere tutti i campi disponibili.
 
-4. **Formato Telegram**: L'endpoint `/api/films/telegram` restituisce testo formattato con:
-   - Emoji (🎬, 🎪, 📽️, etc.)
-   - Markdown (`*bold*` per i titoli)
-   - Formattazione già pronta per Telegram
+4. **Formato Telegram**: L'endpoint `/api/films/telegram` restituisce un unico messaggio compatto (date raggruppate, link IMDb brevi, deduplica titoli), ≤ 4096 caratteri.
 
 ---
 

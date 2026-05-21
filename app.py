@@ -11,6 +11,7 @@ from scraper import (
     scrape_cinema,
     CINEMA_URLS,
     format_telegram_message,
+    TELEGRAM_MAX_MESSAGE_LENGTH,
     report_window_dates,
     REPORT_WINDOW_DAYS,
     apply_report_window,
@@ -70,7 +71,7 @@ def index():
         "description": "API per ottenere i film in programmazione nei cinema di Matera",
         "endpoints": {
             "/api/films": "GET - Ottiene tutti i film dai 3 cinema (JSON)",
-            "/api/films/telegram": "GET - Ottiene messaggio formattato per Telegram",
+            "/api/films/telegram": "GET - Messaggio compatto per Telegram/WhatsApp (max 4096 caratteri)",
             "/api/films/<cinema_name>": "GET - Ottiene i film di un cinema specifico",
             "/health": "GET - Controlla lo stato del servizio"
         },
@@ -146,7 +147,7 @@ def get_cinema_films(cinema_name):
 
 @app.route('/api/films/telegram', methods=['GET'])
 def get_telegram_message():
-    """Restituisce il messaggio formattato per Telegram. Usa ?enrich=1 per includere link IMDb."""
+    """Messaggio unico compatto (max 4096 caratteri). ?enrich=1 aggiunge link IMDb."""
     try:
         enrich = _parse_bool(request.args.get('enrich'))
         data, _ = _scrape_all_cinemas(enrich=enrich)
@@ -154,7 +155,11 @@ def get_telegram_message():
         return Response(
             telegram_msg,
             mimetype='text/plain; charset=utf-8',
-            headers={'Content-Disposition': 'inline'}
+            headers={
+                'Content-Disposition': 'inline',
+                'X-Message-Length': str(len(telegram_msg)),
+                'X-Telegram-Max-Length': str(TELEGRAM_MAX_MESSAGE_LENGTH),
+            },
         ), 200
     except MissingTraktCredentials as exc:
         return jsonify({"error": str(exc)}), 400

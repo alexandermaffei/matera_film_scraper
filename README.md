@@ -101,7 +101,7 @@ Il server sarà disponibile su `http://localhost:5000`
 - `GET /health` - Controllo dello stato del servizio
 - `GET /api/films` - Ottiene tutti i film dai 3 cinema (endpoint principale per Make.com). Usa `?enrich=1` per includere metadata Trakt (tmdb/imdb) nella risposta.
 - `GET /api/films/<cinema_name>` - Ottiene i film di un cinema specifico
-- `GET /api/films/telegram` - Messaggio formattato per Telegram (`?enrich=1` aggiunge link IMDb)
+- `GET /api/films/telegram` - Messaggio compatto per Telegram/WhatsApp (max 4096 caratteri; `?enrich=1` per link IMDb)
 
 ### Esempio di risposta JSON
 

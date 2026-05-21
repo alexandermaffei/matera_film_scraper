@@ -26,6 +26,7 @@ UCI_API_BASE_URL = "https://uci-backend-production-1042268733238.europe-west8.ru
 WEBTIC_API_BASE_URL = "https://secure.webtic.it/api/wtjsonservices.ashx"
 WEBTIC_IL_PICCOLO_LOCAL_ID = 5357
 REPORT_WINDOW_DAYS = 7
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 def get_page(url: str) -> BeautifulSoup:
     """
@@ -750,172 +751,249 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
         "film": films
     }
 
-def format_telegram_message(data: Dict[str, Any]) -> str:
-    """Format Telegram message grouped by film with compact date ranges."""
-    from collections import defaultdict, OrderedDict
+def canonical_title(raw_title: str) -> str:
+    """Normalizza il titolo per deduplicare varianti tipo 'C.A.'."""
+    if not raw_title:
+        return ""
+    t = raw_title.strip()
+    t = re.sub(r"\s*[\-–—]?\s*C\.?\s*A\.?\s*$", "", t, flags=re.I)
+    t = re.sub(r"\s*\(?(contenuto alternativo)\)?\s*$", "", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def film_merge_key(title: str, imdb_url: str = "") -> str:
+    """Chiave stabile per unire varianti titolo (&/and, maiuscole) e duplicati UCI."""
+    if imdb_url:
+        match = re.search(r"tt\d+", imdb_url)
+        if match:
+            return match.group(0)
+    t = canonical_title(title)
+    t = t.replace("&", " and ")
+    t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", t).casefold().strip()
+
+
+def short_imdb_url(url: str) -> str:
+    match = re.search(r"(tt\d+)", url)
+    return f"imdb.com/title/{match.group(1)}" if match else url
+
+
+def group_consecutive_dates(date_times: Dict[str, set]) -> List[tuple]:
+    """Raggruppa giorni consecutivi con gli stessi orari (es. 21-27 mag)."""
+    if not date_times:
+        return []
+    dates = sorted(date_times.keys())
+    groups: List[tuple] = []
+    start = dates[0]
+    end = dates[0]
+    current_times = sorted(date_times[start])
+
+    for date in dates[1:]:
+        times = sorted(date_times[date])
+        prev = datetime.strptime(end, "%Y-%m-%d")
+        nxt = datetime.strptime(date, "%Y-%m-%d")
+        if (nxt - prev).days == 1 and times == current_times:
+            end = date
+            continue
+        groups.append((start, end, current_times))
+        start = end = date
+        current_times = times
+
+    groups.append((start, end, current_times))
+    return groups
+
+
+def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
+    """
+    Un solo messaggio compatto. level 0..4 = compressione progressiva se > 4096 caratteri.
+    """
+    from collections import defaultdict
     from datetime import datetime as dt_class
 
-    lines = ["🎬 FILM IN PROGRAMMAZIONE - MATERA\n"]
-
-    cinema_short_names = {
+    cinema_labels = {
         "Cinema Comunale Guerrieri": "Guerrieri",
         "Il Piccolo": "Piccolo",
         "UCI Cinemas Red Carpet": "Red Carpet",
     }
+    cinema_abbrev = {
+        "Guerrieri": "G",
+        "Piccolo": "Pic",
+        "Red Carpet": "RC",
+    }
 
     mesi_italiano = {
-        '01': 'gennaio', '02': 'febbraio', '03': 'marzo', '04': 'aprile',
-        '05': 'maggio', '06': 'giugno', '07': 'luglio', '08': 'agosto',
-        '09': 'settembre', '10': 'ottobre', '11': 'novembre', '12': 'dicembre'
+        "01": "gen", "02": "feb", "03": "mar", "04": "apr",
+        "05": "mag", "06": "giu", "07": "lug", "08": "ago",
+        "09": "set", "10": "ott", "11": "nov", "12": "dic",
     }
 
     def format_date(date_str: str) -> str:
-        anno, mese, giorno = date_str.split('-')
+        _, mese, giorno = date_str.split("-")
         return f"{int(giorno)} {mesi_italiano.get(mese, mese)}"
 
     def format_range(start_date: str, end_date: str) -> str:
         if start_date == end_date:
             return format_date(start_date)
-        a_y, a_m, a_d = start_date.split('-')
-        b_y, b_m, b_d = end_date.split('-')
-        if a_y == b_y and a_m == b_m:
+        _, a_m, a_d = start_date.split("-")
+        _, b_m, b_d = end_date.split("-")
+        if a_m == b_m:
             return f"{int(a_d)}-{int(b_d)} {mesi_italiano.get(a_m, a_m)}"
-        return f"{format_date(start_date)} → {format_date(end_date)}"
+        return f"{format_date(start_date)}→{format_date(end_date)}"
+
+    include_imdb = level < 2
+    group_dates = level < 4
+    compact_min = 3 if level <= 1 else 2
+    ultra = level >= 4
+
+    lines = ["🎬 MATERA\n"] if level < 3 else ["🎬 MATERA\n"]
 
     films_all = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     films_vo = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     films_non_vo = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
-    film_meta = {}
-    display_titles = {}
+    film_meta: Dict[str, Dict[str, str]] = {}
+    display_titles: Dict[str, str] = {}
+    vo_keys = set()
 
-    def canonical_title(raw_title: str) -> str:
-        """Normalizza il titolo per deduplicare varianti tipo 'C.A.'."""
-        if not raw_title:
-            return ""
-        t = raw_title.strip()
-        # Rimuove suffissi usati per "contenuto alternativo"
-        t = re.sub(r"\s*[\-–—]?\s*C\.?\s*A\.?\s*$", "", t, flags=re.I)
-        t = re.sub(r"\s*\(?(contenuto alternativo)\)?\s*$", "", t, flags=re.I)
-        t = re.sub(r"\s+", " ", t).strip()
-        return t
+    def pick_display(key: str, candidate: str) -> None:
+        candidate = canonical_title(candidate)
+        if not candidate:
+            return
+        prev = display_titles.get(key)
+        if not prev:
+            display_titles[key] = candidate
+            return
+        if len(candidate) < len(prev) or ("&" in candidate and " and " in prev.lower()):
+            display_titles[key] = candidate
 
-    for cinema in data.get('cinema', []):
-        cinema_name = cinema.get('cinema', '')
-        cinema_short = cinema_short_names.get(cinema_name, cinema_name)
-        for film in cinema.get('film', []):
-            raw_title = film.get('titolo')
+    for cinema in data.get("cinema", []):
+        cinema_name = cinema.get("cinema", "")
+        cinema_short = cinema_labels.get(cinema_name, cinema_name)
+        for film in cinema.get("film", []):
+            raw_title = film.get("titolo")
             if not raw_title:
                 continue
-            title = canonical_title(raw_title)
-            if not title:
+            imdb_id = film.get("imdb")
+            imdb_url = film.get("imdb_url") or (
+                f"https://www.imdb.com/title/{imdb_id}/" if imdb_id else ""
+            )
+            key = film_merge_key(raw_title, imdb_url)
+            if not key:
                 continue
-            display_titles.setdefault(title, title)
-            imdb_id = film.get('imdb')
-            imdb_url = film.get('imdb_url')
+            pick_display(key, raw_title)
             if imdb_url:
-                film_meta.setdefault(title, {})['imdb_url'] = imdb_url
-            elif imdb_id:
-                film_meta.setdefault(title, {})['imdb_url'] = f"https://www.imdb.com/title/{imdb_id}/"
+                film_meta.setdefault(key, {})["imdb_url"] = imdb_url
+            if film.get("lingua_originale") is True:
+                vo_keys.add(key)
 
-            for prog in film.get('programmazione', []):
-                date = prog.get('data')
-                for time in prog.get('orari', []):
-                    if not date or not time:
-                        continue
-                    films_all[title][cinema_short][date].add(time.replace('.', ':'))
-            for prog in film.get('programmazione_vo', []):
-                date = prog.get('data')
-                for time in prog.get('orari', []):
-                    if not date or not time:
-                        continue
-                    films_vo[title][cinema_short][date].add(time.replace('.', ':'))
-            for prog in film.get('programmazione_non_vo', []):
-                date = prog.get('data')
-                for time in prog.get('orari', []):
-                    if not date or not time:
-                        continue
-                    films_non_vo[title][cinema_short][date].add(time.replace('.', ':'))
+            def add_times(target, prog_list):
+                for prog in prog_list:
+                    date = prog.get("data")
+                    for time in prog.get("orari", []):
+                        if date and time:
+                            target[key][cinema_short][date].add(time.replace(".", ":"))
 
-    vo_titles = []
-    regular_titles = []
-    for title in sorted(films_all):
-        is_vo = False
-        for cinema in data.get('cinema', []):
-            for film in cinema.get('film', []):
-                if canonical_title(film.get('titolo', '')) == title and film.get('lingua_originale') is True:
-                    is_vo = True
-                    break
-            if is_vo:
-                break
-        if is_vo:
-            vo_titles.append(title)
-        else:
-            regular_titles.append(title)
+            add_times(films_all, film.get("programmazione", []))
+            add_times(films_vo, film.get("programmazione_vo", []))
+            add_times(films_non_vo, film.get("programmazione_non_vo", []))
 
-    def append_times_line(times: List[str]) -> None:
-        if len(times) > 5:
-            lines.append(f"      🕐 {len(times)} spettacoli - primo spettacolo: {times[0]}, ultimo spettacolo: {times[-1]}")
-        else:
-            lines.append(f"      🕐 {' • '.join(times)}")
+    def cinema_tag(name: str) -> str:
+        return cinema_abbrev.get(name, name[:3])
 
-    def append_title_block(title: str, mark_vo: bool = False) -> None:
-        imdb_url = film_meta.get(title, {}).get('imdb_url')
-        title_prefix = "📽️ 🌐VO" if mark_vo else "📽️"
-        display_title = display_titles.get(title, title)
-        if imdb_url:
-            lines.append(f"{title_prefix} {display_title} · {imdb_url}")
-        else:
-            lines.append(f"{title_prefix} {display_title}")
+    def format_times(times: List[str]) -> str:
+        if len(times) >= compact_min:
+            if level >= 3:
+                return f"{len(times)}×{times[0]}-{times[-1]}"
+            return f"{len(times)} spett. {times[0]}-{times[-1]}"
+        return " ".join(times)
 
-        if mark_vo:
-            cinema_map = films_vo[title]
-        else:
-            # Per i film VO mostriamo nella sezione "Altri" solo le proiezioni non VO.
-            if title in vo_titles:
-                cinema_map = films_non_vo[title]
-            else:
-                cinema_map = films_all[title]
-
-        if not cinema_map:
-            lines.append("   📅 Nessuna proiezione disponibile")
-            lines.append("")
-            return
-
+    def schedule_lines(cinema_map) -> List[str]:
+        out: List[str] = []
         for cinema_short in sorted(cinema_map):
             date_map = cinema_map[cinema_short]
-            for date in sorted(date_map):
-                times = sorted(date_map[date])
-                date_label = format_date(date)
-                lines.append(f"   📅 {date_label} · {cinema_short}")
-                append_times_line(times)
-        lines.append("")
+            cin = cinema_tag(cinema_short)
+            if group_dates and not ultra:
+                for start, end, times in group_consecutive_dates(date_map):
+                    label = format_range(start, end)
+                    out.append(f" {label} {cin} {format_times(times)}")
+            elif ultra:
+                parts = []
+                for start, end, times in group_consecutive_dates(date_map):
+                    parts.append(f"{format_range(start, end)} {format_times(times)}")
+                out.append(f" {cin}: {'; '.join(parts)}")
+            else:
+                for date in sorted(date_map):
+                    times = sorted(date_map[date])
+                    out.append(f" {format_date(date)} {cin} {format_times(times)}")
+        return out
 
-    if vo_titles:
-        lines.append("🌐 FILM IN LINGUA ORIGINALE")
-        lines.append("")
-        for title in vo_titles:
-            append_title_block(title, mark_vo=True)
+    def build_block(key: str, mark_vo: bool) -> str:
+        display = display_titles.get(key, key)
+        prefix = "📽️🌐 " if mark_vo else "📽️ "
+        imdb_url = film_meta.get(key, {}).get("imdb_url", "")
+        if include_imdb and imdb_url:
+            head = f"{prefix}{display} {short_imdb_url(imdb_url)}\n"
+        else:
+            head = f"{prefix}{display}\n"
 
-    regular_titles_with_non_vo = list(regular_titles)
-    for title in vo_titles:
-        if films_non_vo.get(title):
-            regular_titles_with_non_vo.append(title)
+        if mark_vo:
+            cinema_map = films_vo[key]
+        elif key in vo_keys:
+            cinema_map = films_non_vo[key]
+        else:
+            cinema_map = films_all[key]
 
-    if regular_titles_with_non_vo:
-        lines.append("🎞️ ALTRI FILM")
-        lines.append("")
-        for title in sorted(regular_titles_with_non_vo):
-            append_title_block(title, mark_vo=False)
+        sched = schedule_lines(cinema_map)
+        if not sched:
+            return head + " —\n"
+        return head + "\n".join(sched) + "\n\n"
 
-    timestamp = data.get('timestamp')
+    vo_list = sorted(vo_keys)
+    altri_keys = sorted(set(films_all.keys()) - vo_keys)
+    for key in vo_list:
+        if films_non_vo.get(key):
+            altri_keys.append(key)
+    altri_keys = sorted(set(altri_keys))
+
+    if vo_list:
+        lines.append("🌐 VO\n" if level < 3 else "🌐\n")
+        for key in vo_list:
+            lines.append(build_block(key, mark_vo=True))
+
+    if altri_keys:
+        lines.append("🎞️\n")
+        for key in altri_keys:
+            lines.append(build_block(key, mark_vo=False))
+
+    timestamp = data.get("timestamp")
     if timestamp:
         try:
-            dt_obj = dt_class.fromisoformat(timestamp.replace('Z', '+00:00'))
-            lines.append(f"Aggiornato il {dt_obj.strftime('%d/%m/%Y alle %H:%M')}")
+            dt_obj = dt_class.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if level >= 3:
+                lines.append(f"\nAgg. {dt_obj.strftime('%d/%m %H:%M')}")
+            else:
+                lines.append(f"\nAggiornato {dt_obj.strftime('%d/%m/%Y %H:%M')}")
         except Exception:
             pass
 
-    return "\n".join(lines)
+    return "".join(lines).rstrip() + "\n"
+
+
+def format_telegram_message(data: Dict[str, Any]) -> str:
+    """Un messaggio unico, compresso fino a max 4096 caratteri (Telegram / copia WhatsApp)."""
+    for level in range(5):
+        msg = _build_telegram_message(data, level=level)
+        if len(msg) <= TELEGRAM_MAX_MESSAGE_LENGTH:
+            return msg
+    msg = _build_telegram_message(data, level=4)
+    if len(msg) > TELEGRAM_MAX_MESSAGE_LENGTH:
+        return msg[: TELEGRAM_MAX_MESSAGE_LENGTH - 1] + "…"
+    return msg
+
+
+def format_telegram_messages(data: Dict[str, Any]) -> List[str]:
+    """Restituisce sempre un singolo messaggio in lista (compatibilità API)."""
+    return [format_telegram_message(data)]
 
 def main():
     """
@@ -956,16 +1034,15 @@ def main():
     print(f"Totale cinema: {len(all_data['cinema'])}")
     print(f"Totale film: {sum(len(c['film']) for c in all_data['cinema'])}")
     
-    # Genera messaggio Telegram
     telegram_msg = format_telegram_message(all_data)
     telegram_file = "messaggio_telegram.txt"
-    with open(telegram_file, 'w', encoding='utf-8') as f:
+    with open(telegram_file, "w", encoding="utf-8") as f:
         f.write(telegram_msg)
-    
-    print(f"\nMessaggio Telegram salvato in {telegram_file}")
-    print("\n" + "="*50)
+
+    print(f"\nMessaggio salvato in {telegram_file} ({len(telegram_msg)} caratteri)")
+    print("\n" + "=" * 50)
     print(telegram_msg)
-    print("="*50)
+    print("=" * 50)
 
 if __name__ == "__main__":
     main()
