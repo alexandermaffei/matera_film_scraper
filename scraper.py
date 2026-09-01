@@ -741,6 +741,25 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
             }
         print("  Webtic non disponibile, fallback a ComingSoon")
 
+    if cinema_name == "Cinema Comunale Guerrieri":
+        from guerrieri import (
+            GUERRIERI_OFFICIAL_URL,
+            WEBTIC_GUERRIERI_LOCAL_ID,
+            scrape_guerrieri_official,
+        )
+
+        allowed_dates = report_window_dates(REPORT_WINDOW_DAYS)
+        webtic_films = scrape_il_piccolo_webtic(allowed_dates, local_id=WEBTIC_GUERRIERI_LOCAL_ID)
+        official_films = scrape_guerrieri_official(allowed_dates, webtic_films=webtic_films)
+        if official_films:
+            print(f"  Sito ufficiale Guerrieri: {len(official_films)} film")
+            return {
+                "cinema": cinema_name,
+                "url": GUERRIERI_OFFICIAL_URL,
+                "film": official_films,
+            }
+        print("  Sito ufficiale Guerrieri non disponibile, fallback a ComingSoon")
+
     soup = get_page(url)
     
     films = extract_film_data(soup, cinema_name)
