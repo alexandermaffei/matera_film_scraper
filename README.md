@@ -32,40 +32,31 @@ python scraper.py
 
 Genererà un file `programmazione_cinema_matera.json` con tutti i dati.
 
-### Ricerca film su Trakt (TMDB/IMDB)
+### Ricerca film su TMDB (IMDb + locandine)
 
-### Scraping completo con Trakt (programmazione + link)
-
-Per scrappare la programmazione e arricchirla automaticamente con i link TMDB/IMDB utilizzare:
+Il matching **non** prende il primo risultato della search (così si evitano id IMDb sbagliati).
+Per ogni titolo: search `it-IT` sull’anno corrente e precedente, score su similarità titolo + recency dell’uscita, tie-break con `release_dates` teatrali IT, poi `external_ids` e `images`.
 
 ```bash
-export TRAKT_CLIENT_ID="110995ce03b0765434c85ddf9354508121f36bf3f10fbce11e814e0dbb818da1"
+export TMDB_ACCESS_TOKEN="eyJ..."   # Bearer v4, oppure TMDB_API_KEY=...
 source venv/bin/activate
 python scrape_with_trakt.py
 ```
 
-Output generato:
-- `programmazione_cinema_matera.json` → dati base
-- `programmazione_cinema_matera_with_trakt.json` → dati arricchiti con slug Trakt + link TMDB/IMDB
-- `messaggio_telegram.txt` → messaggio compatto pronto per l'invio
+`TRAKT_CLIENT_ID` è opzionale: se presente aggiunge lo slug Trakt **senza** sovrascrivere tmdb/imdb.
 
-Esempio (estratto):
-```
-🎬 FILM IN PROGRAMMAZIONE - MATERA
+Output:
+- `programmazione_cinema_matera.json` → programmazione + `tmdb`, `imdb`, `imdb_url`, `poster_url`, `voto_tmdb`
+- `programmazione_cinema_matera_with_trakt.json` → indice per titolo
+- `messaggio_telegram.txt`
 
-📽️ Dracula: L'Amore Perduto
-   📅 13-16 novembre · Red Carpet
-      🕐 16:20 • 18:50 • 21:40
-   📅 17-18 novembre · Red Carpet
-      🕐 19:10 • 21:40
-```
+### Ricerca film su Trakt (solo slug, non gli id)
 
-Per trovare rapidamente gli ID TMDB o IMDB a partire dal titolo del film, usa lo script `trakt_search.py`.
+Per una ricerca manuale Trakt resta `trakt_search.py` (non usarlo per gli id IMDb).
 
 1. Esporta le tue credenziali Trakt (non inserirle nel codice!):
    ```bash
-   export TRAKT_CLIENT_ID="110995ce03b0765434c85ddf9354508121f36bf3f10fbce11e814e0dbb818da1"
-   # Il client secret non è necessario per la sola ricerca pubblica
+   export TRAKT_CLIENT_ID="..."
    ```
 
 2. Esegui la ricerca:
@@ -82,7 +73,7 @@ Per trovare rapidamente gli ID TMDB o IMDB a partire dal titolo del film, usa lo
       IMDB: https://www.imdb.com/title/tt1234567/
    ```
 
-Lo script usa l'endpoint pubblico `/search/movie` di Trakt e restituisce già i link diretti TMDB/IMDB quando disponibili.
+Lo script usa l'endpoint pubblico `/search/movie` di Trakt solo per lo slug; gli id IMDb vanno presi da TMDB.
 
 ### Come API HTTP (per Make.com)
 
@@ -96,12 +87,12 @@ Il server sarà disponibile su `http://localhost:5000`
 ### Endpoint disponibili
 
 
-> ⚠️ Per utilizzare `?enrich=1` sugli endpoint HTTP è necessario definire la variabile di ambiente `TRAKT_CLIENT_ID` sul server (non serve il secret). Se assente, l'API risponde con HTTP 400.
+> Imposta `TMDB_ACCESS_TOKEN` (Bearer v4) o `TMDB_API_KEY` sul server: `/api/films` arricchisce automaticamente ogni film con tmdb/imdb/poster. `?enrich=1` è opzionale (solo slug Trakt; richiede `TRAKT_CLIENT_ID`).
 - `GET /` - Informazioni sul servizio
 - `GET /health` - Controllo dello stato del servizio
-- `GET /api/films` - Ottiene tutti i film dai 3 cinema (endpoint principale per Make.com). Usa `?enrich=1` per includere metadata Trakt (tmdb/imdb) nella risposta.
-- `GET /api/films/<cinema_name>` - Ottiene i film di un cinema specifico
-- `GET /api/films/telegram` - Messaggio compatto per Telegram/WhatsApp (max 4096 caratteri; `?enrich=1` per link IMDb)
+- `GET /api/films` - Tutti i film dai 3 cinema (JSON). Matching TMDB automatico se il token è impostato.
+- `GET /api/films/<cinema_name>` - Film di un cinema specifico
+- `GET /api/films/telegram` - Messaggio compatto per Telegram/WhatsApp (max 4096 caratteri)
 
 ### Esempio di risposta JSON
 

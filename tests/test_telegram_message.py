@@ -11,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scraper import (
     TELEGRAM_MAX_MESSAGE_LENGTH,
     format_telegram_message,
+    format_rating_stars,
     group_consecutive_dates,
     film_merge_key,
+    rating_to_stars,
 )
 
 
@@ -34,13 +36,17 @@ def sample_multi_cinema_data():
     }
     many_rc = {f"2026-05-{d:02d}": ["16:10", "16:30", "17:00", "18:00", "19:00", "20:00", "21:00", "21:40"] for d in range(21, 28)}
 
-    def film(title, imdb, schedule, vo=False):
+    def film(title, imdb, schedule, vo=False, cs_rating=None, tmdb_rating=None):
         progs = [{"data": d, "orari": t} for d, t in schedule.items()]
         f = {
             "titolo": title,
             "imdb_url": f"https://www.imdb.com/title/{imdb}/",
             "programmazione": progs,
         }
+        if cs_rating is not None:
+            f["voto_comingsoon"] = cs_rating
+        if tmdb_rating is not None:
+            f["voto_tmdb"] = tmdb_rating
         if vo:
             f["lingua_originale"] = True
             f["programmazione_vo"] = [{"data": "2026-05-21", "orari": ["18:20"]}]
@@ -64,6 +70,16 @@ def sample_multi_cinema_data():
             },
         ],
     }
+
+
+class TestRatingStars(unittest.TestCase):
+    def test_rating_to_stars(self):
+        self.assertEqual(rating_to_stars(4), "★★★★☆")
+        self.assertEqual(rating_to_stars(3.5), "★★★½☆")
+        self.assertEqual(rating_to_stars(5), "★★★★★")
+
+    def test_format_rating_stars_both_sources(self):
+        self.assertEqual(format_rating_stars(4.0, 7.2), "★★★★☆ ★★★½☆")
 
 
 class TestTelegramHelpers(unittest.TestCase):
@@ -122,8 +138,19 @@ class TestTelegramMessageFormat(unittest.TestCase):
         self.assertNotIn("https://www.imdb.com", self.msg)
 
     def test_vo_section_present(self):
-        self.assertIn("🌐 VO", self.msg)
+        self.assertIn("🌐 PROIEZIONI IN VERSIONE ORIGINALE:", self.msg)
+        self.assertIn("🎞️ PROIEZIONI IN ITALIANO:", self.msg)
         self.assertIn("📽️🌐", self.msg)
+
+    def test_message_headers(self):
+        self.assertIn("🎬 MATERA - PROIEZIONI DEI PROSSIMI 7 GIORNI", self.msg)
+
+    def test_ratings_in_message(self):
+        data = sample_multi_cinema_data()
+        data["cinema"][1]["film"][0]["voto_comingsoon"] = 4.0
+        data["cinema"][1]["film"][0]["voto_tmdb"] = 8.0
+        msg = format_telegram_message(data)
+        self.assertIn("★★★★☆ ★★★★☆", msg)
 
 
 class TestTelegramMessageFromCache(unittest.TestCase):
@@ -134,7 +161,10 @@ class TestTelegramMessageFromCache(unittest.TestCase):
         data = json.loads(cache.read_text(encoding="utf-8"))
         msg = format_telegram_message(data)
         self.assertLessEqual(len(msg), TELEGRAM_MAX_MESSAGE_LENGTH)
-        self.assertTrue(msg.startswith("🎬 MATERA"))
+        self.assertTrue(
+            msg.startswith("🎬 MATERA - PROIEZIONI DEI PROSSIMI 7 GIORNI")
+            or msg.startswith("🎬 MATERA")
+        )
 
 
 if __name__ == "__main__":

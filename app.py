@@ -15,10 +15,9 @@ from scraper import (
     report_window_dates,
     REPORT_WINDOW_DAYS,
     apply_report_window,
-    scrape_uci_official_window,
-    merge_red_carpet_with_uci,
 )
 from trakt_enrich import enrich_with_trakt, MissingTraktCredentials
+from tmdb_enrich import enrich_films_from_tmdb, MissingTmdbCredentials
 from datetime import datetime
 import traceback
 
@@ -46,12 +45,14 @@ def _scrape_all_cinemas(enrich=False):
     for cinema_name, url in CINEMA_URLS.items():
         cinema_data = scrape_cinema(url, cinema_name)
         cinema_data = apply_report_window(cinema_data, allowed_dates)
-        if cinema_name == "UCI Cinemas Red Carpet":
-            uci_films = scrape_uci_official_window(allowed_dates)
-            cinema_data["film"] = merge_red_carpet_with_uci(cinema_data.get("film", []), uci_films)
         data["cinema"].append(cinema_data)
 
     aggregated = None
+    try:
+        enrich_films_from_tmdb(data["cinema"])
+    except MissingTmdbCredentials:
+        pass
+
     if enrich:
         aggregated = enrich_with_trakt(data["cinema"])
 
@@ -70,7 +71,7 @@ def index():
         "service": "Matera Film Scraper API",
         "description": "API per ottenere i film in programmazione nei cinema di Matera",
         "endpoints": {
-            "/api/films": "GET - Ottiene tutti i film dai 3 cinema (JSON)",
+            "/api/films": "GET - Tutti i film (JSON). TMDB matching automatico se TMDB_ACCESS_TOKEN è impostato",
             "/api/films/telegram": "GET - Messaggio compatto per Telegram/WhatsApp (max 4096 caratteri)",
             "/api/films/<cinema_name>": "GET - Ottiene i film di un cinema specifico",
             "/health": "GET - Controlla lo stato del servizio"
@@ -88,7 +89,8 @@ def health():
 
 @app.route('/api/films', methods=['GET'])
 def get_all_films():
-    """Restituisce tutti i film; usa ?enrich=1 per includere metadata Trakt."""
+    """Restituisce tutti i film. TMDB (id, IMDb, locandina) è automatico se c'è il token.
+    ?enrich=1 aggiunge anche metadata Trakt senza sovrascrivere gli id TMDB."""
     try:
         enrich = _parse_bool(request.args.get('enrich'))
         data, aggregated = _scrape_all_cinemas(enrich=enrich)
@@ -147,7 +149,7 @@ def get_cinema_films(cinema_name):
 
 @app.route('/api/films/telegram', methods=['GET'])
 def get_telegram_message():
-    """Messaggio unico compatto (max 4096 caratteri). ?enrich=1 aggiunge link IMDb."""
+    """Messaggio unico compatto (max 4096 caratteri). IMDb arriva da TMDB; ?enrich=1 aggiunge Trakt."""
     try:
         enrich = _parse_bool(request.args.get('enrich'))
         data, _ = _scrape_all_cinemas(enrich=enrich)

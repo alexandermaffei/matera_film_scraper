@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Esegue lo scraping dei cinema e arricchisce i film con link TMDB/IMDB via Trakt."""
+"""Scraping cinema + matching TMDB (id, IMDb, locandina). Trakt è opzionale e non sovrascrive gli id."""
 
 import json
 import os
@@ -14,26 +14,16 @@ from scraper import (
     report_window_dates,
     REPORT_WINDOW_DAYS,
     apply_report_window,
-    scrape_uci_official_window,
-    merge_red_carpet_with_uci,
 )
 from trakt_enrich import enrich_with_trakt, MissingTraktCredentials
+from tmdb_enrich import enrich_films_from_tmdb, MissingTmdbCredentials
 
 OUTPUT_JSON = Path("programmazione_cinema_matera.json")
 OUTPUT_ENRICHED = Path("programmazione_cinema_matera_with_trakt.json")
 
 
-def ensure_trakt_credentials() -> None:
-    if not os.getenv("TRAKT_CLIENT_ID"):
-        raise SystemExit(
-            "TRAKT_CLIENT_ID non impostata. Esegui `export TRAKT_CLIENT_ID=...` prima di lanciare lo script."
-        )
-
-
 def main() -> None:
-    ensure_trakt_credentials()
-
-    print("Inizio scraping dei cinema con arricchimento Trakt...\n")
+    print("Inizio scraping dei cinema con matching TMDB...\n")
 
     all_data: Dict[str, Any] = {
         "timestamp": datetime.now().isoformat(),
@@ -47,37 +37,55 @@ def main() -> None:
         "to": allowed_dates[-1],
     }
 
-    # Scrape ciascun cinema
     for cinema_name, url in CINEMA_URLS.items():
         cinema_data = scrape_cinema(url, cinema_name)
         cinema_data = apply_report_window(cinema_data, allowed_dates)
-        if cinema_name == "UCI Cinemas Red Carpet":
-            uci_films = scrape_uci_official_window(allowed_dates)
-            cinema_data["film"] = merge_red_carpet_with_uci(cinema_data.get("film", []), uci_films)
         all_data["cinema"].append(cinema_data)
         print(f"- {cinema_name}: {len(cinema_data['film'])} film")
 
-    # Salva dati raw
     OUTPUT_JSON.write_text(json.dumps(all_data, ensure_ascii=False, indent=2))
 
-    print("\nRicerca su Trakt per ogni film...")
+    print("\nMatching TMDB (titolo + anno / uscita Italia, poi IMDb e locandina)...")
     try:
-        aggregated = enrich_with_trakt(all_data["cinema"])
-    except MissingTraktCredentials as exc:
-        raise SystemExit(str(exc)) from exc
+        matched = enrich_films_from_tmdb(all_data["cinema"])
+    except MissingTmdbCredentials as exc:
+        raise SystemExit(
+            f"{exc}\nEsporta TMDB_ACCESS_TOKEN (Bearer v4) oppure TMDB_API_KEY."
+        ) from exc
 
-    for title, info in sorted(aggregated.items()):
-        print(f"  ✅ {title}: TMDB {info.get('tmdb')} | IMDB {info.get('imdb')}")
+    for title, info in sorted(matched.items()):
+        print(
+            f"  ✅ {title}: TMDB {info.get('tmdb')} | IMDB {info.get('imdb')} | score {info.get('tmdb_match_score')}"
+        )
 
-    # Salva JSON arricchito
+    aggregated = None
+    if os.getenv("TRAKT_CLIENT_ID"):
+        print("\nTrakt opzionale (non sovrascrive id TMDB)...")
+        try:
+            aggregated = enrich_with_trakt(all_data["cinema"])
+        except MissingTraktCredentials as exc:
+            print(f"  Trakt saltato: {exc}")
+
+    OUTPUT_JSON.write_text(json.dumps(all_data, ensure_ascii=False, indent=2))
+
+    films_out = aggregated or {
+        title: {
+            "title": info.get("title") or title,
+            "tmdb": info.get("tmdb"),
+            "imdb": info.get("imdb"),
+            "imdb_url": info.get("imdb_url"),
+            "poster_url": info.get("poster_url"),
+        }
+        for title, info in matched.items()
+    }
     enriched = {
         "timestamp": all_data.get("timestamp"),
-        "films": aggregated,
+        "films": films_out,
     }
     OUTPUT_ENRICHED.write_text(json.dumps(enriched, ensure_ascii=False, indent=2))
 
-    print(f"\nDati base salvati in {OUTPUT_JSON}")
-    print(f"Dati arricchiti salvati in {OUTPUT_ENRICHED}")
+    print(f"\nDati salvati in {OUTPUT_JSON}")
+    print(f"Indice film salvato in {OUTPUT_ENRICHED}")
 
     telegram_msg = format_telegram_message(all_data)
     Path("messaggio_telegram.txt").write_text(telegram_msg, encoding="utf-8")

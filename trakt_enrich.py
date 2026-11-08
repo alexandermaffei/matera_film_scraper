@@ -48,6 +48,13 @@ def enrich_with_trakt(cinemas: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
             entry["cinema"].add(cinema_name)
             entry["programmazione"].extend(film.get("programmazione", []))
             entry["refs"].append(film)
+            if film.get("tmdb") and not entry.get("tmdb"):
+                entry["tmdb"] = film.get("tmdb")
+            if film.get("imdb") and not entry.get("imdb"):
+                entry["imdb"] = film.get("imdb")
+                entry["imdb_url"] = film.get("imdb_url") or (
+                    f"https://www.imdb.com/title/{film['imdb']}/" if film.get("imdb") else None
+                )
 
     # Query Trakt for each film and propagate ids
     for title, info in films.items():
@@ -64,21 +71,24 @@ def enrich_with_trakt(cinemas: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
             continue
 
         result = results[0]
-        info["tmdb"] = result.get("tmdb")
-        info["imdb"] = result.get("imdb")
+        # Non sovrascrivere tmdb/imdb già risolti da TMDB (il match Trakt sul titolo è inaffidabile).
+        if info.get("tmdb") is None:
+            info["tmdb"] = result.get("tmdb")
+        if info.get("imdb") is None:
+            info["imdb"] = result.get("imdb")
         info["trakt"] = result.get("trakt") or result.get("slug")
-        if info["imdb"]:
+        if info["imdb"] and not info.get("imdb_url"):
             info["imdb_url"] = f"https://www.imdb.com/title/{info['imdb']}/"
 
         # Propagate metadata back to the original film entries
         for film_ref in info["refs"]:
-            if info["tmdb"]:
+            if info["tmdb"] and not film_ref.get("tmdb"):
                 film_ref["tmdb"] = info["tmdb"]
             if info["trakt"]:
                 film_ref["trakt"] = info["trakt"]
-            if info["imdb"]:
+            if info["imdb"] and not film_ref.get("imdb"):
                 film_ref["imdb"] = info["imdb"]
-            if info["imdb_url"]:
+            if info.get("imdb_url") and not film_ref.get("imdb_url"):
                 film_ref["imdb_url"] = info["imdb_url"]
 
     # Convert cinema set to sorted list and drop refs before returning

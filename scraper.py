@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 import json
 import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from collections import defaultdict
 import unicodedata
 
@@ -18,13 +18,16 @@ import unicodedata
 CINEMA_URLS = {
     "Cinema Comunale Guerrieri": "https://www.comingsoon.it/cinema/matera/cinema-comunale-guerrieri/2635/",
     "Il Piccolo": "https://www.comingsoon.it/cinema/matera/il-piccolo/4976/",
-    "UCI Cinemas Red Carpet": "https://www.comingsoon.it/cinema/matera/uci-cinemas-red-carpet/5635/"
+    "Red Carpet Cinema": "https://www.comingsoon.it/cinema/matera/uci-cinemas-red-carpet/5635/"
 }
+
+RED_CARPET_OFFICIAL_URL = "https://matera.redcarpetcinema.it/index.php"
 
 UCI_THEATRE_SLUG = "uci-cinemas-redcarpet-matera"
 UCI_API_BASE_URL = "https://uci-backend-production-1042268733238.europe-west8.run.app/api"
 WEBTIC_API_BASE_URL = "https://secure.webtic.it/api/wtjsonservices.ashx"
 WEBTIC_IL_PICCOLO_LOCAL_ID = 5357
+WEBTIC_RED_CARPET_LOCAL_ID = 7554
 REPORT_WINDOW_DAYS = 7
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
@@ -90,6 +93,35 @@ def is_ov_title(title: str) -> bool:
     return re.match(r"^\s*\(?O\.?\s*V\.?\)?", title, flags=re.I) is not None
 
 
+# Suffissi/prefissi Webtic che non fanno parte del titolo del film
+# (es. Red Carpet: "Atmos - X", "X - Vm 14", "X - Ospiti In Sala", "X (Vos)").
+_WEBTIC_PREFIX_RE = re.compile(r"^\s*(?:atmos|imax|3d|4dx|dolby)\s*[-:]\s*", re.I)
+_WEBTIC_VO_SUFFIX_RE = re.compile(r"\s*[-(\[]\s*(?:v\.?\s*o\.?\s*s?\.?|o\.?\s*v\.?|vos|versione originale)\s*[)\]]?\s*$", re.I)
+_WEBTIC_NOISE_SUFFIX_RE = re.compile(
+    r"\s*-\s*(?:vm\s*\d{1,2}|ospiti in sala|anteprima|evento speciale|atmos|3d)\s*$", re.I
+)
+
+
+def clean_webtic_title(raw_title: str) -> tuple:
+    """Ritorna (titolo pulito, is_vo) partendo dal titolo grezzo Webtic."""
+    if not raw_title:
+        return "", False
+    is_vo = is_ov_title(raw_title)
+    title = strip_ov_prefix(raw_title)
+    title = _WEBTIC_PREFIX_RE.sub("", title)
+    changed = True
+    while changed:
+        changed = False
+        if _WEBTIC_VO_SUFFIX_RE.search(title):
+            title = _WEBTIC_VO_SUFFIX_RE.sub("", title)
+            is_vo = True
+            changed = True
+        if _WEBTIC_NOISE_SUFFIX_RE.search(title):
+            title = _WEBTIC_NOISE_SUFFIX_RE.sub("", title)
+            changed = True
+    return re.sub(r"\s+", " ", title).strip(), is_vo
+
+
 def scrape_il_piccolo_webtic(allowed_dates: List[str], local_id: int = WEBTIC_IL_PICCOLO_LOCAL_ID) -> List[Dict[str, Any]]:
     """
     Recupera la programmazione di Il Piccolo da Webtic.
@@ -124,10 +156,9 @@ def scrape_il_piccolo_webtic(allowed_dates: List[str], local_id: int = WEBTIC_IL
 
     for event in events:
         raw_title = event.get("Title", "")
-        title = strip_ov_prefix(raw_title)
+        title, is_vo = clean_webtic_title(raw_title)
         if not title:
             continue
-        is_vo = is_ov_title(raw_title)
 
         if title not in by_title:
             by_title[title] = {
@@ -390,6 +421,12 @@ def merge_film_entries(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str,
     merge_programmazione_field("programmazione_vo")
     merge_programmazione_field("programmazione_non_vo")
 
+    for field in ("voto_comingsoon", "voto_tmdb", "imdb", "imdb_url", "tmdb", "poster_url"):
+        if base.get(field) is not None:
+            merged[field] = base.get(field)
+        elif extra.get(field) is not None:
+            merged[field] = extra.get(field)
+
     return merged
 
 
@@ -589,6 +626,47 @@ def extract_times_from_text(text: str) -> List[str]:
     
     return cleaned_times
 
+def extract_comingsoon_rating(section) -> Optional[float]:
+    """Estrae il voto ComingSoon (0-5, anche .5) dalle icone stella nella card film."""
+    if section is None:
+        return None
+    score = 0.0
+    found = False
+    for icon in section.find_all("i", class_=True):
+        classes = " ".join(icon.get("class", []))
+        if re.search(r"\bstar-empty\b", classes):
+            continue
+        found = True
+        if re.search(r"\bstar-half", classes):
+            score += 0.5
+        elif re.search(r"\bstar\b", classes):
+            score += 1.0
+    return score if found else None
+
+
+def rating_to_stars(rating: float, max_stars: int = 5) -> str:
+    """Converte un voto su 5 in stringa di stelline (★, ½, ☆)."""
+    rating = max(0.0, min(float(max_stars), float(rating)))
+    rounded = round(rating * 2) / 2
+    full = int(rounded)
+    half = rounded - full >= 0.5
+    empty = max_stars - full - (1 if half else 0)
+    return "★" * full + ("½" if half else "") + "☆" * empty
+
+
+def format_rating_stars(
+    voto_comingsoon: Optional[float] = None,
+    voto_tmdb: Optional[float] = None,
+) -> str:
+    """Formatta stelline CS (0-5) e TMDB (0-10)."""
+    parts: List[str] = []
+    if voto_comingsoon is not None:
+        parts.append(rating_to_stars(voto_comingsoon))
+    if voto_tmdb is not None:
+        parts.append(rating_to_stars(voto_tmdb / 2.0))
+    return " ".join(parts)
+
+
 def extract_film_data(soup: BeautifulSoup, cinema_name: str) -> List[Dict[str, Any]]:
     """
     Estrae i dati dei film dalla pagina HTML.
@@ -712,6 +790,9 @@ def extract_film_data(soup: BeautifulSoup, cinema_name: str) -> List[Dict[str, A
                 "sala": sala_info,
                 "programmazione": programmazione if programmazione else []  # Date e orari dettagliati
             }
+            cs_rating = extract_comingsoon_rating(section)
+            if cs_rating is not None:
+                film_data["voto_comingsoon"] = cs_rating
             films.append(film_data)
     
     return films
@@ -740,6 +821,18 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
                 "film": webtic_films,
             }
         print("  Webtic non disponibile, fallback a ComingSoon")
+
+    if cinema_name == "Red Carpet Cinema":
+        allowed_dates = report_window_dates(REPORT_WINDOW_DAYS)
+        webtic_films = scrape_il_piccolo_webtic(allowed_dates, local_id=WEBTIC_RED_CARPET_LOCAL_ID)
+        if webtic_films:
+            print(f"  Webtic: trovati {len(webtic_films)} film per Red Carpet")
+            return {
+                "cinema": cinema_name,
+                "url": RED_CARPET_OFFICIAL_URL,
+                "film": webtic_films,
+            }
+        print("  Webtic Red Carpet non disponibile, fallback a ComingSoon")
 
     if cinema_name == "Cinema Comunale Guerrieri":
         from guerrieri import (
@@ -833,6 +926,7 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
     cinema_labels = {
         "Cinema Comunale Guerrieri": "Guerrieri",
         "Il Piccolo": "Piccolo",
+        "Red Carpet Cinema": "Red Carpet",
         "UCI Cinemas Red Carpet": "Red Carpet",
     }
     cinema_display = {
@@ -861,11 +955,17 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
         return f"{format_date(start_date)}→{format_date(end_date)}"
 
     include_imdb = level < 2
+    include_ratings = level < 3
     group_dates = level < 4
     compact_min = 4 if level <= 2 else 2
     ultra = level >= 4
 
-    lines = ["🎬 MATERA\n"] if level < 3 else ["🎬 MATERA\n"]
+    if level < 3:
+        lines = ["🎬 MATERA - PROIEZIONI DEI PROSSIMI 7 GIORNI\n\n"]
+        if include_ratings:
+            lines.append("(1ª fila stelline = ComingSoon, 2ª = TMDB)\n\n")
+    else:
+        lines = ["🎬 MATERA\n\n"]
 
     films_all = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     films_vo = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
@@ -902,6 +1002,13 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
             pick_display(key, raw_title)
             if imdb_url:
                 film_meta.setdefault(key, {})["imdb_url"] = imdb_url
+            meta = film_meta.setdefault(key, {})
+            cs = film.get("voto_comingsoon")
+            if cs is not None:
+                meta["voto_comingsoon"] = cs
+            tmdb_v = film.get("voto_tmdb")
+            if tmdb_v is not None:
+                meta["voto_tmdb"] = tmdb_v
             if film.get("lingua_originale") is True:
                 vo_keys.add(key)
 
@@ -952,11 +1059,20 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
     def build_block(key: str, mark_vo: bool) -> str:
         display = display_titles.get(key, key)
         prefix = "📽️🌐 " if mark_vo else "📽️ "
-        imdb_url = film_meta.get(key, {}).get("imdb_url", "")
+        meta = film_meta.get(key, {})
+        imdb_url = meta.get("imdb_url", "")
+        ratings = ""
+        if include_ratings:
+            ratings = format_rating_stars(
+                meta.get("voto_comingsoon"),
+                meta.get("voto_tmdb"),
+            )
+            if ratings:
+                ratings = f"{ratings} "
         if include_imdb and imdb_url:
-            head = f"{prefix}{display} {short_imdb_url(imdb_url)}\n"
+            head = f"{prefix}{ratings}{display} {short_imdb_url(imdb_url)}\n"
         else:
-            head = f"{prefix}{display}\n"
+            head = f"{prefix}{ratings}{display}\n"
 
         if mark_vo:
             cinema_map = films_vo[key]
@@ -978,12 +1094,18 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
     altri_keys = sorted(set(altri_keys))
 
     if vo_list:
-        lines.append("🌐 VO\n" if level < 3 else "🌐\n")
+        if level < 3:
+            lines.append("🌐 PROIEZIONI IN VERSIONE ORIGINALE:\n")
+        else:
+            lines.append("🌐\n")
         for key in vo_list:
             lines.append(build_block(key, mark_vo=True))
 
     if altri_keys:
-        lines.append("🎞️\n")
+        if level < 3:
+            lines.append("🎞️ PROIEZIONI IN ITALIANO:\n")
+        else:
+            lines.append("🎞️\n")
         for key in altri_keys:
             lines.append(build_block(key, mark_vo=False))
 
@@ -1039,13 +1161,20 @@ def main():
         cinema_data = scrape_cinema(url, cinema_name)
         cinema_data = apply_report_window(cinema_data, allowed_dates)
 
-        # Fusione dedicata per UCI Red Carpet: ComingSoon + sito ufficiale UCI
-        if cinema_name == "UCI Cinemas Red Carpet":
-            uci_films = scrape_uci_official_window(allowed_dates)
-            cinema_data["film"] = merge_red_carpet_with_uci(cinema_data.get("film", []), uci_films)
 
         all_data["cinema"].append(cinema_data)
         print(f"Trovati {len(cinema_data['film'])} film per {cinema_name}")
+
+    try:
+        from tmdb_enrich import enrich_films_from_tmdb
+        enrich_films_from_tmdb(all_data["cinema"])
+        print("Matching TMDB (id, IMDb, locandine, voti) aggiunto.")
+    except Exception as exc:
+        msg = str(exc)
+        if "TMDB_API_KEY" in msg or "TMDB_ACCESS_TOKEN" in msg:
+            print("TMDB_ACCESS_TOKEN / TMDB_API_KEY non impostata: niente id IMDb né locandine.")
+        else:
+            raise
     
     # Salva i dati in JSON
     output_file = "programmazione_cinema_matera.json"
