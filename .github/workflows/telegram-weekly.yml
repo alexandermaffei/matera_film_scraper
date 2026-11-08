@@ -1,0 +1,67 @@
+name: Telegram programmazione cinema
+
+# Lunedì e giovedì alle 8:00 ora di Roma.
+# Il cron di GitHub è in UTC: ci sono due trigger (06:00 e 07:00 UTC) e parte
+# solo quello che corrisponde alle 8:00 a Roma (ora legale o solare).
+on:
+  schedule:
+    - cron: "0 6 * * 1,4"   # 8:00 Roma con ora legale (UTC+2)
+    - cron: "0 7 * * 1,4"   # 8:00 Roma con ora solare (UTC+1)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write   # per tenere attivo il cron (repo pubblica: GitHub lo spegne dopo 60 giorni senza attività)
+
+concurrency:
+  group: telegram-weekly
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Controlla ora di Roma
+        id: gate
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          offset=$(TZ=Europe/Rome date +%z)   # +0200 legale, +0100 solare
+          if { [ "$SCHEDULE" = "0 6 * * 1,4" ] && [ "$offset" = "+0200" ]; } || \
+             { [ "$SCHEDULE" = "0 7 * * 1,4" ] && [ "$offset" = "+0100" ]; }; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Trigger $SCHEDULE non corrisponde alle 8:00 a Roma (offset $offset), salto."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Installa dipendenze
+        if: steps.gate.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Scrape e invio Telegram
+        if: steps.gate.outputs.run == 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
+        run: python send_telegram.py
+
+      - name: Mantieni attivo il cron
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/telegram-weekly.yml/enable"
