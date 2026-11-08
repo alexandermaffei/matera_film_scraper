@@ -963,7 +963,22 @@ def _build_telegram_message(data: Dict[str, Any], level: int = 0) -> str:
     if level < 3:
         lines = ["🎬 MATERA - PROIEZIONI DEI PROSSIMI 7 GIORNI\n\n"]
         if include_ratings:
-            lines.append("(1ª fila stelline = ComingSoon, 2ª = TMDB)\n\n")
+            has_cs = any(
+                film.get("voto_comingsoon") is not None
+                for cinema in data.get("cinema", [])
+                for film in cinema.get("film", [])
+            )
+            has_tmdb = any(
+                film.get("voto_tmdb") is not None
+                for cinema in data.get("cinema", [])
+                for film in cinema.get("film", [])
+            )
+            if has_cs and has_tmdb:
+                lines.append("(1ª fila stelline = ComingSoon, 2ª = TMDB)\n\n")
+            elif has_tmdb:
+                lines.append("(stelline = voto TMDB)\n\n")
+            elif has_cs:
+                lines.append("(stelline = voto ComingSoon)\n\n")
     else:
         lines = ["🎬 MATERA\n\n"]
 
