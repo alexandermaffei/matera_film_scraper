@@ -80,7 +80,7 @@ jobs:
         run: |
           text=$(printf 'Errore nel workflow "Telegram programmazione cinema" durante lo scraping o l'"'"'invio della programmazione :(\n\n%s' "$RUN_URL")
           for chat in $(echo "$TELEGRAM_CHAT_ID" | tr ',' ' '); do
-            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            curl -sS --fail-with-body -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${chat}" \
               --data-urlencode "text=${text}" \
               -d disable_web_page_preview=true > /dev/null
