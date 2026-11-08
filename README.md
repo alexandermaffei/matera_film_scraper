@@ -40,40 +40,12 @@ Per ogni titolo: search `it-IT` sull’anno corrente e precedente, score su simi
 ```bash
 export TMDB_ACCESS_TOKEN="eyJ..."   # Bearer v4, oppure TMDB_API_KEY=...
 source venv/bin/activate
-python scrape_with_trakt.py
+python scraper.py
 ```
-
-`TRAKT_CLIENT_ID` è opzionale: se presente aggiunge lo slug Trakt **senza** sovrascrivere tmdb/imdb.
 
 Output:
 - `programmazione_cinema_matera.json` → programmazione + `tmdb`, `imdb`, `imdb_url`, `poster_url`, `voto_tmdb`
-- `programmazione_cinema_matera_with_trakt.json` → indice per titolo
 - `messaggio_telegram.txt`
-
-### Ricerca film su Trakt (solo slug, non gli id)
-
-Per una ricerca manuale Trakt resta `trakt_search.py` (non usarlo per gli id IMDb).
-
-1. Esporta le tue credenziali Trakt (non inserirle nel codice!):
-   ```bash
-   export TRAKT_CLIENT_ID="..."
-   ```
-
-2. Esegui la ricerca:
-   ```bash
-   python trakt_search.py "Bugonia" --year 2025 --limit 3
-   ```
-
-   Output di esempio:
-   ```
-   1. Bugonia (2025)
-      Score: 980.0
-      Trakt slug: bugonia-2025
-      TMDB: https://www.themoviedb.org/movie/123456
-      IMDB: https://www.imdb.com/title/tt1234567/
-   ```
-
-Lo script usa l'endpoint pubblico `/search/movie` di Trakt solo per lo slug; gli id IMDb vanno presi da TMDB.
 
 ### Come API HTTP (per Make.com)
 
@@ -87,7 +59,7 @@ Il server sarà disponibile su `http://localhost:5000`
 ### Endpoint disponibili
 
 
-> Imposta `TMDB_ACCESS_TOKEN` (Bearer v4) o `TMDB_API_KEY` sul server: `/api/films` arricchisce automaticamente ogni film con tmdb/imdb/poster. `?enrich=1` è opzionale (solo slug Trakt; richiede `TRAKT_CLIENT_ID`).
+> Imposta `TMDB_ACCESS_TOKEN` (Bearer v4) o `TMDB_API_KEY` sul server: `/api/films` arricchisce automaticamente ogni film con tmdb/imdb/poster. `?enrich=1` è ancora accettato ma non fa più nulla.
 - `GET /` - Informazioni sul servizio
 - `GET /health` - Controllo dello stato del servizio
 - `GET /api/films` - Tutti i film dai 3 cinema (JSON). Matching TMDB automatico se il token è impostato.

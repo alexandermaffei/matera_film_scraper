@@ -5,7 +5,7 @@ Server Flask per esporre lo scraper dei cinema di Matera come API HTTP.
 Può essere chiamato da Make.com o altri servizi web.
 """
 
-from flask import Flask, jsonify, Response, request
+from flask import Flask, jsonify, Response
 from flask_cors import CORS
 from scraper import (
     scrape_cinema,
@@ -16,7 +16,6 @@ from scraper import (
     REPORT_WINDOW_DAYS,
     apply_report_window,
 )
-from trakt_enrich import enrich_with_trakt, MissingTraktCredentials
 from tmdb_enrich import enrich_films_from_tmdb, MissingTmdbCredentials
 from datetime import datetime
 import traceback
@@ -24,13 +23,7 @@ import traceback
 app = Flask(__name__)
 CORS(app)  # Abilita CORS per permettere chiamate da Make.com
 
-def _parse_bool(value):
-    if value is None:
-        return False
-    return value.lower() in {"1", "true", "yes", "on"}
-
-
-def _scrape_all_cinemas(enrich=False):
+def _scrape_all_cinemas():
     allowed_dates = report_window_dates(REPORT_WINDOW_DAYS)
     data = {
         "timestamp": datetime.now().isoformat(),
@@ -47,14 +40,10 @@ def _scrape_all_cinemas(enrich=False):
         cinema_data = apply_report_window(cinema_data, allowed_dates)
         data["cinema"].append(cinema_data)
 
-    aggregated = None
     try:
         enrich_films_from_tmdb(data["cinema"])
     except MissingTmdbCredentials:
         pass
-
-    if enrich:
-        aggregated = enrich_with_trakt(data["cinema"])
 
     total_films = sum(len(c['film']) for c in data["cinema"])
     data["statistics"] = {
@@ -62,7 +51,7 @@ def _scrape_all_cinemas(enrich=False):
         "total_films": total_films,
     }
 
-    return data, aggregated
+    return data
 
 @app.route('/')
 def index():
@@ -90,15 +79,10 @@ def health():
 @app.route('/api/films', methods=['GET'])
 def get_all_films():
     """Restituisce tutti i film. TMDB (id, IMDb, locandina) è automatico se c'è il token.
-    ?enrich=1 aggiunge anche metadata Trakt senza sovrascrivere gli id TMDB."""
+    ?enrich=1 è accettato per compatibilità ma non fa più nulla."""
     try:
-        enrich = _parse_bool(request.args.get('enrich'))
-        data, aggregated = _scrape_all_cinemas(enrich=enrich)
-        if aggregated is not None:
-            data["trakt_enriched"] = aggregated
+        data = _scrape_all_cinemas()
         return jsonify(data), 200
-    except MissingTraktCredentials as exc:
-        return jsonify({"error": str(exc)}), 400
     except Exception as e:
         return jsonify({
             "error": str(e),
@@ -149,10 +133,10 @@ def get_cinema_films(cinema_name):
 
 @app.route('/api/films/telegram', methods=['GET'])
 def get_telegram_message():
-    """Messaggio unico compatto (max 4096 caratteri). IMDb arriva da TMDB; ?enrich=1 aggiunge Trakt."""
+    """Messaggio unico compatto (max 4096 caratteri). IMDb e voti arrivano da TMDB.
+    ?enrich=1 è accettato per compatibilità ma non fa più nulla."""
     try:
-        enrich = _parse_bool(request.args.get('enrich'))
-        data, _ = _scrape_all_cinemas(enrich=enrich)
+        data = _scrape_all_cinemas()
         telegram_msg = format_telegram_message(data)
         return Response(
             telegram_msg,
@@ -163,8 +147,6 @@ def get_telegram_message():
                 'X-Telegram-Max-Length': str(TELEGRAM_MAX_MESSAGE_LENGTH),
             },
         ), 200
-    except MissingTraktCredentials as exc:
-        return jsonify({"error": str(exc)}), 400
     except Exception as e:
         return jsonify({
             "error": str(e),
