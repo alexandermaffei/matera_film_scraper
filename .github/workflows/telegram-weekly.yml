@@ -8,6 +8,11 @@ on:
     - cron: "0 6 * * 1,4"   # 8:00 Roma con ora legale (UTC+2)
     - cron: "0 7 * * 1,4"   # 8:00 Roma con ora solare (UTC+1)
   workflow_dispatch:
+    inputs:
+      test_error:
+        description: "Simula un errore per provare la notifica"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,6 +57,12 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: pip install -r requirements.txt
 
+      - name: Errore simulato
+        if: steps.gate.outputs.run == 'true' && inputs.test_error
+        run: |
+          echo "Errore simulato (test_error=true)"
+          exit 1
+
       - name: Scrape e invio Telegram
         if: steps.gate.outputs.run == 'true'
         env:
@@ -60,8 +71,23 @@ jobs:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
         run: python send_telegram.py
 
+      - name: Notifica errore su Telegram
+        if: failure() && steps.gate.outputs.run == 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          text=$(printf 'Errore nel workflow "Telegram programmazione cinema" durante lo scraping o l'"'"'invio della programmazione :(\n\n%s' "$RUN_URL")
+          for chat in $(echo "$TELEGRAM_CHAT_ID" | tr ',' ' '); do
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${chat}" \
+              --data-urlencode "text=${text}" \
+              -d disable_web_page_preview=true > /dev/null
+          done
+
       - name: Mantieni attivo il cron
-        if: github.event_name == 'schedule'
+        if: always() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/telegram-weekly.yml/enable"
