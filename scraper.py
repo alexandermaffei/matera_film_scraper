@@ -78,11 +78,20 @@ def filter_programmazione_by_dates(programmazione: List[Dict[str, Any]], allowed
     return filtered
 
 
+# Prefissi VO Webtic: "(O.V.) X", "OV - X", "(V.O.S.) X", "(Lingua Originale) X" (Red Carpet).
+# Parentesi o separatore obbligatori: evita falsi positivi su titoli come "Ovunque".
+_OV_LABEL = r"(?:o\.?\s*v\.?|v\.?\s*o\.?\s*s?\.?|lingua\s+originale|versione\s+originale)"
+_OV_PREFIX_RE = re.compile(
+    rf"^\s*(?:\(\s*{_OV_LABEL}\s*\)|{_OV_LABEL}(?=\s*[-:–—]))\s*[-:–—]?\s*",
+    re.I,
+)
+
+
 def strip_ov_prefix(title: str) -> str:
-    """Rimuove prefissi VO dal titolo (es. '(O.V.)')."""
+    """Rimuove prefissi VO dal titolo (es. '(O.V.)', '(Lingua Originale)')."""
     if not title:
         return ""
-    cleaned = re.sub(r"^\s*\(?O\.?\s*V\.?\)?\s*", "", title, flags=re.I)
+    cleaned = _OV_PREFIX_RE.sub("", title, count=1)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -90,15 +99,17 @@ def is_ov_title(title: str) -> bool:
     """Rileva titoli marcati come lingua originale in Webtic."""
     if not title:
         return False
-    return re.match(r"^\s*\(?O\.?\s*V\.?\)?", title, flags=re.I) is not None
+    return _OV_PREFIX_RE.match(title) is not None
 
 
 # Suffissi/prefissi Webtic che non fanno parte del titolo del film
 # (es. Red Carpet: "Atmos - X", "X - Vm 14", "X - Ospiti In Sala", "X (Vos)").
-_WEBTIC_PREFIX_RE = re.compile(r"^\s*(?:atmos|imax|3d|4dx|dolby)\s*[-:]\s*", re.I)
-_WEBTIC_VO_SUFFIX_RE = re.compile(r"\s*[-(\[]\s*(?:v\.?\s*o\.?\s*s?\.?|o\.?\s*v\.?|vos|versione originale)\s*[)\]]?\s*$", re.I)
+_WEBTIC_PREFIX_RE = re.compile(r"^\s*(?:atmos|imax|3d|4dx|dolby|evento)\s*[-:]\s*", re.I)
+_WEBTIC_VO_SUFFIX_RE = re.compile(
+    r"\s*[-(\[]\s*(?:v\.?\s*o\.?\s*s?\.?|o\.?\s*v\.?|vos|versione originale|lingua originale)\s*[)\]]?\s*$", re.I
+)
 _WEBTIC_NOISE_SUFFIX_RE = re.compile(
-    r"\s*-\s*(?:vm\s*\d{1,2}|ospiti in sala|anteprima|evento speciale|atmos|3d)\s*$", re.I
+    r"\s*(?:-\s*(?:vm\s*\d{1,2}|ospiti in sala|anteprima|evento speciale|atmos|3d)|\s\(?vm\s*\d{1,2}\)?)\s*$", re.I
 )
 
 
@@ -108,7 +119,8 @@ def clean_webtic_title(raw_title: str) -> tuple:
         return "", False
     is_vo = is_ov_title(raw_title)
     title = strip_ov_prefix(raw_title)
-    title = _WEBTIC_PREFIX_RE.sub("", title)
+    while _WEBTIC_PREFIX_RE.search(title):
+        title = _WEBTIC_PREFIX_RE.sub("", title, count=1)
     changed = True
     while changed:
         changed = False
@@ -120,6 +132,33 @@ def clean_webtic_title(raw_title: str) -> tuple:
             title = _WEBTIC_NOISE_SUFFIX_RE.sub("", title)
             changed = True
     return re.sub(r"\s+", " ", title).strip(), is_vo
+
+
+def _merge_truncated_vo_titles(by_title: Dict[str, Dict[str, Any]]) -> None:
+    """
+    Red Carpet tronca i titoli VO per far spazio al prefisso
+    ("(Lingua Originale) Scrooge E Gli Spiriti" vs "Scrooge E Gli Spiriti Del Natale").
+    Se un titolo solo-VO e' l'inizio di UN SOLO titolo in italiano, fonde gli orari li'.
+    """
+    for vo_title in list(by_title):
+        vo_data = by_title[vo_title]
+        if vo_data["lingue_disponibili"] != {"OV"}:
+            continue
+        prefix = vo_title.lower() + " "
+        candidates = [
+            t for t, d in by_title.items()
+            if t != vo_title and "ITA" in d["lingue_disponibili"] and t.lower().startswith(prefix)
+        ]
+        if len(candidates) != 1:
+            continue
+        target = by_title[candidates[0]]
+        target["lingua_originale"] = True
+        target["lingue_disponibili"].add("OV")
+        target["orari"].update(vo_data["orari"])
+        for field in ("programmazione", "programmazione_vo", "programmazione_non_vo"):
+            for day, times in vo_data[field].items():
+                target[field][day].update(times)
+        del by_title[vo_title]
 
 
 def scrape_il_piccolo_webtic(allowed_dates: List[str], local_id: int = WEBTIC_IL_PICCOLO_LOCAL_ID) -> List[Dict[str, Any]]:
@@ -196,6 +235,8 @@ def scrape_il_piccolo_webtic(allowed_dates: List[str], local_id: int = WEBTIC_IL
                 by_title[title]["programmazione"][day_iso].add(hhmm)
                 target = "programmazione_vo" if is_vo else "programmazione_non_vo"
                 by_title[title][target][day_iso].add(hhmm)
+
+    _merge_truncated_vo_titles(by_title)
 
     films: List[Dict[str, Any]] = []
     for title in sorted(by_title):
