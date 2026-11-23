@@ -111,6 +111,7 @@ _WEBTIC_VO_SUFFIX_RE = re.compile(
 _WEBTIC_NOISE_SUFFIX_RE = re.compile(
     r"\s*(?:-\s*(?:vm\s*\d{1,2}|ospiti in sala|anteprima|evento speciale|atmos|3d)|\s\(?vm\s*\d{1,2}\)?)\s*$", re.I
 )
+_WEBTIC_LANG_PREFIX_RE = re.compile(r"^\s*\(\s*([A-Z]{2,3})\s*\)\s*")
 
 
 def clean_webtic_title(raw_title: str) -> tuple:
@@ -119,8 +120,19 @@ def clean_webtic_title(raw_title: str) -> tuple:
         return "", False
     is_vo = is_ov_title(raw_title)
     title = strip_ov_prefix(raw_title)
-    while _WEBTIC_PREFIX_RE.search(title):
-        title = _WEBTIC_PREFIX_RE.sub("", title, count=1)
+    changed = True
+    while changed:
+        changed = False
+        if _WEBTIC_PREFIX_RE.search(title):
+            title = _WEBTIC_PREFIX_RE.sub("", title, count=1)
+            changed = True
+        # Codice lingua audio, es. "(JP) Your Name" / "(EN) Dune": VO se non italiano.
+        lang = _WEBTIC_LANG_PREFIX_RE.match(title)
+        if lang:
+            title = title[lang.end():]
+            if lang.group(1).upper() not in {"IT", "ITA"}:
+                is_vo = True
+            changed = True
     changed = True
     while changed:
         changed = False
@@ -138,13 +150,14 @@ def _merge_truncated_vo_titles(by_title: Dict[str, Dict[str, Any]]) -> None:
     """
     Red Carpet tronca i titoli VO per far spazio al prefisso
     ("(Lingua Originale) Scrooge E Gli Spiriti" vs "Scrooge E Gli Spiriti Del Natale").
+    Il taglio puo' cadere a meta' parola ("Your Na" vs "Your Name. 4k ...").
     Se un titolo solo-VO e' l'inizio di UN SOLO titolo in italiano, fonde gli orari li'.
     """
     for vo_title in list(by_title):
         vo_data = by_title[vo_title]
-        if vo_data["lingue_disponibili"] != {"OV"}:
+        if vo_data["lingue_disponibili"] != {"OV"} or len(vo_title) < 5:
             continue
-        prefix = vo_title.lower() + " "
+        prefix = vo_title.lower()
         candidates = [
             t for t, d in by_title.items()
             if t != vo_title and "ITA" in d["lingue_disponibili"] and t.lower().startswith(prefix)
@@ -891,6 +904,15 @@ def scrape_cinema(url: str, cinema_name: str) -> Dict[str, Any]:
                 "cinema": cinema_name,
                 "url": GUERRIERI_OFFICIAL_URL,
                 "film": official_films,
+            }
+        # Il sito ufficiale a volte e' vuoto ("Nessun evento trovato") mentre la
+        # biglietteria Webtic ha gia' gli spettacoli: meglio quelli che niente.
+        if webtic_films:
+            print(f"  Sito ufficiale Guerrieri vuoto, uso Webtic: {len(webtic_films)} film")
+            return {
+                "cinema": cinema_name,
+                "url": GUERRIERI_OFFICIAL_URL,
+                "film": webtic_films,
             }
         print("  Sito ufficiale Guerrieri non disponibile, fallback a ComingSoon")
 
